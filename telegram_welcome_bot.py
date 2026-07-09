@@ -9,6 +9,7 @@ telegram_welcome_bot.py (용량 최적화 및 완전 자동화 버전)
 
 import logging
 import threading
+import asyncio
 import json
 import requests
 import os
@@ -63,10 +64,10 @@ def generate_7day_code():
         "X-Admin-Secret": ADMIN_SECRET,
         "Content-Type": "application/json"
     }
-    # 7일권 발급 (7일 = 604800초)
+    # 7일권 발급 (서버는 duration_days 파라미터만 인식함 — duration_seconds는 지원 안 함!)
     body = {
         "note": "텔레그램 자동 유입 유저 (7일 체험)",
-        "duration_seconds": 604800 
+        "duration_days": 7
     }
     try:
         res = requests.post(url, headers=headers, json=body, timeout=10)
@@ -128,7 +129,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("안녕하세요! 자동매매 프로그램 배포 봇입니다. 🤖\n인증 및 링크 생성을 시작합니다...")
 
     # 1. 라이선스 코드를 Render 서버에서 즉시 받아옴
-    license_code = generate_7day_code()
+    #    (동기 함수라 그냥 부르면 봇 전체가 멈추므로, 별도 스레드에서 실행)
+    license_code = await asyncio.to_thread(generate_7day_code)
     
     if not license_code:
         await update.message.reply_text("⚠️ 현재 라이선스 서버 점검 중입니다. 잠시 후 다시 /start 를 입력해 주세요.")
