@@ -1,0 +1,13 @@
+python -m PyInstaller --onefile --noconsole --name "멀티거래소선물pro자동매매" --add-data "license_client_code.py;." gateio_supertrend_bot.py
+
+파일 탐색기에서 두 파일이 들어있는 폴더를 엽니다
+폴더 안의 빈 공간에서 Shift + 마우스 우클릭
+"여기에 PowerShell 창 열기" 또는 "여기서 명령 창 열기" 클릭
+
+
+
+
+k3j9x8m2p5q7w1e4r6t9y2u8i0o3
+
+setx BOT_TOKEN "8612743997:AAGRpDAHiu62LZgZmEb8gjfDAggl--1z00w"
+setx LICENSE_ADMIN_SECRET "k3j9x8m2p5q7w1e4r6t9y2u8i0o3"
