@@ -87,8 +87,8 @@ async def greet_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name = member.full_name
         welcome_text = (
             f"안녕하세요, {name}님! 반가워요! 👋\n\n"
-            f"혹시 Gate.io 거래소에서 안정적으로 수익을 내는\n"
-            f"**SuperTrend 자동매매 프로그램**에 관심이 있으신가요?\n"
+            f"혹시 Gate.io Binance Bybit OKX Bitget 거래소에서 안정적으로 수익을 내는\n"
+            f" 자동매매 프로그램에 관심이 있으신가요?\n"
             f"아래 버튼을 눌러 답변해 주세요!"
         )
         keyboard = [
@@ -140,7 +140,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔑 체험 코드: `{license_code}`\n\n"
         f"아래 '프로그램 다운로드' 버튼을 클릭하여 압축파일을 내려받으신 후, "
         f"실행 창에 위 코드를 복사해서 붙여넣으시면 즉시 자동매매가 시작됩니다.\n\n"
-        f"이용 중 궁금한 점은 언제든 이 채팅방에 질문을 입력하시면 봇이 24시간 답변해 드립니다! 📈"
+        f"프로그램 연장을 원하시면 5개 거래소중 아무 거래소 상관없이 첨부파일에 있는 레퍼럴로 가입하시고 거래소와 UID 보내주시면 확인후 정식코드 발급해 드리겠습니다. 📈"
     )
     
     keyboard = [[InlineKeyboardButton("📦 프로그램 다운로드 (클릭)", url=PROGRAM_DOWNLOAD_URL)]]
