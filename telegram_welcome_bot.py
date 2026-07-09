@@ -9,7 +9,6 @@ telegram_welcome_bot.py (용량 최적화 및 완전 자동화 버전)
 
 import logging
 import threading
-import asyncio
 import json
 import requests
 import os
