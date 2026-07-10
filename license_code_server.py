@@ -465,55 +465,28 @@ def api_list_trial_users():
     return jsonify({"ok": True, "count": len(result), "trial_users": result})
 
 
+@app.route("/admin/reset_trial_user", methods=["POST"])
+def admin_reset_trial_user():
+    """테스트/재발급 목적으로 특정 텔레그램 유저의 '체험코드 받음' 기록을 지운다.
+    이후 그 유저가 /start를 다시 누르면 새 7일 코드를 자동으로 받을 수 있게 된다."""
+    if not _check_admin_auth():
+        return jsonify({"ok": False, "error": "관리자 인증 실패"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    tgt_id = data.get("telegram_user_id", "")
+    if not tgt_id:
+        return jsonify({"ok": False, "error": "telegram_user_id가 필요합니다."}), 400
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM trial_users WHERE telegram_user_id=?", (str(tgt_id),))
+    changed = conn.total_changes
+    conn.commit()
+    conn.close()
+    if changed > 0:
+        return jsonify({"ok": True, "message": f"유저 {tgt_id} 리셋 완료 — 다시 /start 하면 새 코드를 받습니다."})
+    return jsonify({"ok": False, "error": "해당 유저의 발급 기록을 찾을 수 없습니다."}), 404
+
+
 if __name__ == "__main__":
     init_db()
     print("⚠️  실행 전 확인: SERVER_SECRET / ADMIN_SECRET을 랜덤 값으로 교체했는지 확인하세요.")
     port = int(os.environ.get("PORT", 5000))  # Render/Railway 등은 PORT 환경변수로 포트를 지정함
     app.run(host="0.0.0.0", port=port, debug=False)
-# ===================== [안전성 확보] 체험 유저 제한 초기화 API =====================
-@app.route("/admin/reset_trial_user", methods=["POST"])
-def admin_reset_trial_user():
-    if not _check_admin_auth():
-        return jsonify({"ok": False, "error": "관리자 인증 실패"}), 401
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        tgt_id = data.get("telegram_user_id", "")
-        if not tgt_id:
-            return jsonify({"ok": False, "error": "telegram_user_id 부족"}), 400
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("DELETE FROM trial_users WHERE telegram_user_id=?", (str(tgt_id),))
-        changed = conn.total_changes
-        conn.commit()
-        conn.close()
-        if changed > 0:
-            return jsonify({"ok": True, "message": f"유저 {tgt_id} 리셋 완료 🎉"})
-        return jsonify({"ok": False, "error": "해당 유저를 찾을 수 없음"}), 404
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-    # ===================== [비상 스위치] 브라우저 클릭용 유저 초기화 =====================
-@app.route("/admin/easy_reset/<user_id>")
-def easy_reset(user_id):
-    try:
-        # 데이터베이스 연결
-        conn = sqlite3.connect(DB_PATH)
-        
-        # 1. 텔레그램 유저 체험판 중복 제한 풀기
-        conn.execute("DELETE FROM trial_users WHERE telegram_user_id=?", (str(user_id),))
-        
-        # 2. 해당 유저가 쓰던 기기 묶임도 싹 다 초기화
-        conn.execute("UPDATE license_codes SET bound_device_id=NULL, is_blocked=0 WHERE code='57A9-72ED-3901'")
-        
-        conn.commit()
-        conn.close()
-        
-        return f"<h1>🎉 텔레그램 유저 {user_id} 초기화 완료!</h1><p>이제 봇에서 다시 코드를 받거나 기존 코드로 접속할 수 있습니다.</p>"
-    except Exception as e:
-        return f"<h1>에러 발생</h1><p>{str(e)}</p>"
-    # 코드 맨 아래쪽에 이 코드를 복사해서 붙여넣고 저장/푸시하세요
-@app.route("/debug/routes")
-def debug_routes():
-    import urllib
-    output = []
-    for rule in app.url_map.iter_rules():
-        output.append(f"{rule.endpoint}: {rule.rule}")
-    return "\n".join(output)
