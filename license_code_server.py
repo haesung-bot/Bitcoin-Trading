@@ -466,12 +466,11 @@ if __name__ == "__main__":
     print("⚠️  실행 전 확인: SERVER_SECRET / ADMIN_SECRET을 랜덤 값으로 교체했는지 확인하세요.")
     port = int(os.environ.get("PORT", 5000))  # Render/Railway 등은 PORT 환경변수로 포트를 지정함
     app.run(host="0.0.0.0", port=port, debug=False)
-
-# ===================== [추가] 텔레그램 체험 유저 초기화 (재발급 허용) =====================
+# ===================== [추가] 체험판 유저 제한 초기화 API =====================
 @app.route("/admin/reset_trial_user", methods=["POST"])
 def admin_reset_trial_user():
-    """특정 텔레그램 유저의 체험 코드 발급 기록을 지워줘서,
-    /start를 눌렀을 때 새 코드를 다시 받아 갈 수 있도록 풀어주는 기능"""
+    """특정 텔레그램 유저의 체험판 발급 기록을 데이터베이스에서 완전히 삭제하여
+    다시 /start를 눌렀을 때 코드를 새로 받아갈 수 있도록 풀어주는 함수"""
     if not _check_admin_auth():
         return jsonify({"ok": False, "error": "관리자 인증 실패"}), 401
         
@@ -482,8 +481,8 @@ def admin_reset_trial_user():
         return jsonify({"ok": False, "error": "telegram_user_id가 필요합니다."}), 400
 
     conn = sqlite3.connect(DB_PATH)
-    # trial_users 테이블에서 해당 유저 삭제
-    conn.execute("DELETE FROM trial_users WHERE telegram_user_id=?", (str(telegram_user_id),))
+    # trial_users 테이블에서 해당 유저의 중복 방지 기록을 삭제
+    cursor = conn.execute("DELETE FROM trial_users WHERE telegram_user_id=?", (str(telegram_user_id),))
     changed = conn.total_changes
     conn.commit()
     conn.close()
