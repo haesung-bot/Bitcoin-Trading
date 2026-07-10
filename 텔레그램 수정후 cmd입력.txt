@@ -1,3 +1,3 @@
 git add .
-git commit -m "00"
+git commit -m "코드중복방지"
 git push origin main

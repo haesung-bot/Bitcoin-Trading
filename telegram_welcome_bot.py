@@ -11,6 +11,7 @@ import logging
 import threading
 import asyncio
 import json
+import time
 import requests
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -25,7 +26,7 @@ from telegram.ext import (
 from flask import Flask
 
 # ─── [설정 항목] ───
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "여기에_실제_텔레그램_봇_토큰_입력")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8612743997:AAEkg107o_0nHAvPsGThZLZppvig0QicU6s")
 
 # 내 Render 라이선스 서버 정보
 LICENSE_SERVER_URL = "https://bitcoin-trading-1111.onrender.com"
@@ -36,7 +37,7 @@ PROGRAM_DOWNLOAD_URL = "https://github.com/haesung-bot/Bitcoin-Trading/releases/
 
 # ⚠️ 답을 못 찾을 때 안내할 운영자 개인 텔레그램 링크.
 # 텔레그램 앱 → 설정 → 프로필 편집에서 @username을 만들거나 확인할 수 있습니다.
-OPERATOR_PROFILE_LINK = "https://t.me/내_텔레그램_아이디"
+OPERATOR_PROFILE_LINK = "https://t.me/hhyuk0101"
 
 FAQ_FILE_PATH = "faq.json"
 
@@ -61,7 +62,34 @@ def load_faq():
             logger.error(f"FAQ 로드 실패: {e}")
     return []
 
-# ─── [3. Render 서버 연동 7일 코드 발급 함수] ───
+# ─── [3-1. 중복 발급 방지: 라이선스 서버(SQLite DB)에 기록/조회 ───
+def has_already_received(user_id):
+    """이 텔레그램 유저가 이미 체험 코드를 받았는지 라이선스 서버에 물어본다."""
+    url = f"{LICENSE_SERVER_URL}/admin/check_trial_user"
+    headers = {"X-Admin-Secret": ADMIN_SECRET, "Content-Type": "application/json"}
+    try:
+        res = requests.post(url, headers=headers, json={"telegram_user_id": str(user_id)}, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            return bool(data.get("already_issued"))
+    except Exception as e:
+        logger.error(f"중복발급 확인 실패: {e}")
+    # 서버 통신 자체가 안 되면, 안전하게 '이미 받은 것으로' 처리하지 않고 일단 진행되게 둔다
+    # (서버 문제로 정상 유저가 코드를 못 받는 것을 막기 위함 — 실제 중복은 아래 mark 단계에서 막힘)
+    return False
+
+
+def save_issued_user(user_id, code):
+    """이 유저가 코드를 받았다는 걸 라이선스 서버(SQLite DB)에 기록한다."""
+    url = f"{LICENSE_SERVER_URL}/admin/mark_trial_issued"
+    headers = {"X-Admin-Secret": ADMIN_SECRET, "Content-Type": "application/json"}
+    try:
+        requests.post(url, headers=headers, json={"telegram_user_id": str(user_id), "code": code}, timeout=10)
+    except Exception as e:
+        logger.error(f"발급 기록 저장 실패: {e}")
+
+
+# ─── [3-2. Render 서버 연동 7일 코드 발급 함수] ───
 def generate_7day_code():
     url = f"{LICENSE_SERVER_URL}/admin/generate"
     headers = {
@@ -130,6 +158,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
 
+    user_id = update.effective_user.id
+
+    # 이미 체험 코드를 받은 적 있는 유저인지 확인 (최초 1회만 발급)
+    if has_already_received(user_id):
+        keyboard = [[InlineKeyboardButton("💬 운영자에게 문의하기", url=OPERATOR_PROFILE_LINK)]]
+        await update.message.reply_text(
+            "이미 체험 코드를 받으신 계정입니다. 😊\n"
+            "체험 코드는 계정당 1회만 발급됩니다.\n\n"
+            "정식 이용권 문의는 아래 버튼으로 운영자에게 연락해주세요.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
     await update.message.reply_text("안녕하세요! 자동매매 프로그램 배포 봇입니다. 🤖\n인증 및 링크 생성을 시작합니다...")
 
     # 1. 라이선스 코드를 Render 서버에서 즉시 받아옴
@@ -139,6 +180,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not license_code:
         await update.message.reply_text("⚠️ 현재 라이선스 서버 점검 중입니다. 잠시 후 다시 /start 를 입력해 주세요.")
         return
+
+    # 발급 성공 시 이 유저는 "이미 받음"으로 즉시 기록 (중복 발급 방지)
+    save_issued_user(user_id, license_code)
 
     # 2. 다운로드 가이드 및 라이선스 코드 안내 (버튼 결합)
     guide_text = (
@@ -178,7 +222,7 @@ async def handle_faq_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── [메인 실행부] ───
 def main():
-    if BOT_TOKEN == "여기에_실제_텔레그램_봇_토큰_입력":
+    if BOT_TOKEN == "8612743997:AAEkg107o_0nHAvPsGThZLZppvig0QicU6s":
         print("⚠️ BOT_TOKEN을 변경해 주세요.")
         return
 

@@ -66,6 +66,15 @@ def init_db():
         conn.execute("ALTER TABLE codes ADD COLUMN bound_device_id TEXT")
     if "expires_at" not in existing_cols:
         conn.execute("ALTER TABLE codes ADD COLUMN expires_at INTEGER")
+
+    # 텔레그램 체험 코드 중복 발급 방지용 테이블
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trial_users (
+            telegram_user_id TEXT PRIMARY KEY,
+            code TEXT,
+            issued_at INTEGER
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -369,6 +378,87 @@ def admin_list():
     if not _check_admin_auth():
         return jsonify({"ok": False, "error": "관리자 인증 실패"}), 401
     return jsonify({"ok": True, "codes": list_all_codes(), "review_warning_days": REVIEW_WARNING_DAYS})
+
+
+# ===================== 텔레그램 체험코드 중복발급 방지 =====================
+def check_trial_issued(telegram_user_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT code, issued_at FROM trial_users WHERE telegram_user_id=?",
+        (str(telegram_user_id),)
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return {"code": row[0], "issued_at": row[1]}
+
+
+def mark_trial_issued(telegram_user_id, code):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            "INSERT INTO trial_users (telegram_user_id, code, issued_at) VALUES (?, ?, ?)",
+            (str(telegram_user_id), code, int(time.time()))
+        )
+        conn.commit()
+        success = True
+    except sqlite3.IntegrityError:
+        success = False  # 이미 기록된 유저(동시요청 등으로 중복 시도된 경우) — 중복 저장 방지
+    conn.close()
+    return success
+
+
+@app.route("/admin/check_trial_user", methods=["POST"])
+def api_check_trial_user():
+    """텔레그램 봇이 코드 발급 전에 '이 유저 이미 받았는지' 확인할 때 호출.
+    관리자 비밀번호로 보호되어 있어 봇 쪽에도 ADMIN_SECRET이 필요합니다."""
+    if not _check_admin_auth():
+        return jsonify({"ok": False, "error": "관리자 인증 실패"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    telegram_user_id = data.get("telegram_user_id", "")
+    if not telegram_user_id:
+        return jsonify({"ok": False, "error": "telegram_user_id가 필요합니다."}), 400
+
+    existing = check_trial_issued(telegram_user_id)
+    if existing:
+        return jsonify({"ok": True, "already_issued": True, "detail": existing})
+    return jsonify({"ok": True, "already_issued": False})
+
+
+@app.route("/admin/mark_trial_issued", methods=["POST"])
+def api_mark_trial_issued():
+    """텔레그램 봇이 코드를 발급한 직후, '이 유저는 받았다'고 기록할 때 호출."""
+    if not _check_admin_auth():
+        return jsonify({"ok": False, "error": "관리자 인증 실패"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    telegram_user_id = data.get("telegram_user_id", "")
+    code = data.get("code", "")
+    if not telegram_user_id or not code:
+        return jsonify({"ok": False, "error": "telegram_user_id와 code가 모두 필요합니다."}), 400
+
+    success = mark_trial_issued(telegram_user_id, code)
+    if success:
+        return jsonify({"ok": True, "message": "기록 완료"})
+    return jsonify({"ok": False, "error": "이미 기록된 유저입니다 (중복 방지됨)"}), 409
+
+
+@app.route("/admin/list_trial_users", methods=["GET"])
+def api_list_trial_users():
+    """지금까지 체험 코드를 받은 텔레그램 유저 전체 목록 조회.
+    브라우저 주소창이나 PowerShell로 직접 확인할 수 있습니다."""
+    if not _check_admin_auth():
+        return jsonify({"ok": False, "error": "관리자 인증 실패"}), 401
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT telegram_user_id, code, issued_at FROM trial_users ORDER BY issued_at DESC"
+    ).fetchall()
+    conn.close()
+    result = [
+        {"telegram_user_id": r[0], "code": r[1], "issued_at": r[2],
+         "issued_at_readable": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r[2]))}
+        for r in rows
+    ]
+    return jsonify({"ok": True, "count": len(result), "trial_users": result})
 
 
 if __name__ == "__main__":
