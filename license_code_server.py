@@ -41,7 +41,11 @@ ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "CHANGE_THIS_ADMIN_SECRET")
 TOKEN_VALID_SECONDS = 24 * 60 * 60          # 활성화 토큰 유효 기간 (24시간마다 재검증)
 REVIEW_WARNING_DAYS = 7                      # 이 기간 이상 미점검이면 관리자 목록에서 경고 표시
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "license_codes.db")
+# Render 영구 디스크(/data)가 존재하면 거길 쓰고, 없으면 기존 컴퓨터 경로를 씁니다.
+if os.path.exists("/data"):
+    DB_PATH = "/data/license_codes.db"
+else:
+    DB_PATH = os.path.join(os.path.dirname(__file__), "license_codes.db")
 
 
 # ===================== DB =====================
