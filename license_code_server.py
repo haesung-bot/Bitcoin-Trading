@@ -173,6 +173,13 @@ def is_expired(record):
     return exp is not None and int(time.time()) > int(exp)
 
 
+def _readable(ts):
+    """유닉스 타임스탬프(초)를 'YYYY-MM-DD HH:MM:SS' 형태로 바꾼다. 값이 없으면 None."""
+    if not ts:
+        return None
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
 def list_all_codes():
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("SELECT * FROM codes ORDER BY issued_at DESC").fetchall()
@@ -189,6 +196,14 @@ def list_all_codes():
             d["days_remaining"] = round((d["expires_at"] - now) / 86400, 1)
         else:
             d["days_remaining"] = None  # 무기한
+
+        # ⚠️ 아래 필드들은 전부 '초 단위 유닉스 타임스탬프'라서 언뜻 보면 큰 숫자라 다른 값(유저ID 등)과
+        # 헷갈리기 쉽습니다. 그래서 사람이 읽기 쉬운 날짜 형태를 같이 넣어드립니다.
+        d["issued_at_readable"] = _readable(d.get("issued_at"))
+        d["last_operator_check_readable"] = _readable(d.get("last_operator_check"))
+        d["blocked_at_readable"] = _readable(d.get("blocked_at"))
+        d["expires_at_readable"] = _readable(d.get("expires_at"))  # 무기한이면 None으로 표시됨
+
         result.append(d)
     return result
 
@@ -381,7 +396,18 @@ def admin_list():
     """전체 코드 목록. needs_review=true인 항목이 'N일 이상 안 본 코드'입니다."""
     if not _check_admin_auth():
         return jsonify({"ok": False, "error": "관리자 인증 실패"}), 401
-    return jsonify({"ok": True, "codes": list_all_codes(), "review_warning_days": REVIEW_WARNING_DAYS})
+    return jsonify({
+        "ok": True,
+        "codes": list_all_codes(),
+        "review_warning_days": REVIEW_WARNING_DAYS,
+        "note": (
+            "issued_at/last_operator_check/blocked_at/expires_at는 초 단위 유닉스 타임스탬프입니다 "
+            "(예: expires_at=1784312256는 텔레그램 유저ID가 아니라 '만료 시각'입니다). "
+            "각 필드 옆의 '_readable' 값이 사람이 읽기 쉬운 날짜입니다. "
+            "이 목록은 '코드' 정보만 담고 있으며, 어떤 텔레그램 유저가 받았는지는 "
+            "/admin/list_trial_users 에서 확인하세요."
+        )
+    })
 
 
 # ===================== 텔레그램 체험코드 중복발급 방지 =====================
