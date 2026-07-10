@@ -41,11 +41,22 @@ ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "CHANGE_THIS_ADMIN_SECRET")
 TOKEN_VALID_SECONDS = 24 * 60 * 60          # 활성화 토큰 유효 기간 (24시간마다 재검증)
 REVIEW_WARNING_DAYS = 7                      # 이 기간 이상 미점검이면 관리자 목록에서 경고 표시
 
-# Render 영구 디스크(/data)가 존재하면 거길 쓰고, 없으면 기존 컴퓨터 경로를 씁니다.
-if os.path.exists("/data"):
+# Render 영구 디스크 마운트 경로를 환경변수(DATA_DIR)로 지정할 수 있게 함.
+# 1) DATA_DIR 환경변수가 있으면 그 경로를 최우선 사용 (Render 대시보드에서 디스크 만들 때 설정한 Mount Path와 반드시 일치해야 함)
+# 2) 없으면 관례적으로 많이 쓰이는 /data가 존재하는지 확인
+# 3) 그것도 없으면(로컬 테스트 등) 기존처럼 코드 파일과 같은 폴더 사용 — 이 경우 Render에서는 재배포 시 사라짐
+_data_dir = os.environ.get("DATA_DIR", "").strip()
+if _data_dir and os.path.isdir(_data_dir):
+    DB_PATH = os.path.join(_data_dir, "license_codes.db")
+elif os.path.exists("/data"):
     DB_PATH = "/data/license_codes.db"
 else:
     DB_PATH = os.path.join(os.path.dirname(__file__), "license_codes.db")
+
+print(f"ℹ️ DB 저장 경로: {DB_PATH}")
+if not (os.path.exists("/data") or (_data_dir and os.path.isdir(_data_dir))):
+    print("⚠️ 영구 디스크가 감지되지 않았습니다! 이 상태로 재배포하면 코드/유저 기록이 초기화됩니다. "
+          "Render에서 Persistent Disk를 추가하고 DATA_DIR 환경변수를 그 Mount Path와 동일하게 설정하세요.")
 
 
 # ===================== DB =====================
