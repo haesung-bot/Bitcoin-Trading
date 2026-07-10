@@ -509,3 +509,11 @@ def easy_reset(user_id):
         return f"<h1>🎉 텔레그램 유저 {user_id} 초기화 완료!</h1><p>이제 봇에서 다시 코드를 받거나 기존 코드로 접속할 수 있습니다.</p>"
     except Exception as e:
         return f"<h1>에러 발생</h1><p>{str(e)}</p>"
+    # 코드 맨 아래쪽에 이 코드를 복사해서 붙여넣고 저장/푸시하세요
+@app.route("/debug/routes")
+def debug_routes():
+    import urllib
+    output = []
+    for rule in app.url_map.iter_rules():
+        output.append(f"{rule.endpoint}: {rule.rule}")
+    return "\n".join(output)
