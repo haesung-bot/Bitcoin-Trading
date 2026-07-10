@@ -486,3 +486,22 @@ def admin_reset_trial_user():
         return jsonify({"ok": False, "error": "해당 유저를 찾을 수 없음"}), 404
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+    # ===================== [비상 스위치] 브라우저 클릭용 유저 초기화 =====================
+@app.route("/admin/easy_reset/<user_id>")
+def easy_reset(user_id):
+    try:
+        # 데이터베이스 연결
+        conn = sqlite3.connect(DB_PATH)
+        
+        # 1. 텔레그램 유저 체험판 중복 제한 풀기
+        conn.execute("DELETE FROM trial_users WHERE telegram_user_id=?", (str(user_id),))
+        
+        # 2. 해당 유저가 쓰던 기기 묶임도 싹 다 초기화
+        conn.execute("UPDATE license_codes SET bound_device_id=NULL, is_blocked=0 WHERE code='57A9-72ED-3901'")
+        
+        conn.commit()
+        conn.close()
+        
+        return f"<h1>🎉 텔레그램 유저 {user_id} 초기화 완료!</h1><p>이제 봇에서 다시 코드를 받거나 기존 코드로 접속할 수 있습니다.</p>"
+    except Exception as e:
+        return f"<h1>에러 발생</h1><p>{str(e)}</p>"
