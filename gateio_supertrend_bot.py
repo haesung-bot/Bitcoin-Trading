@@ -434,7 +434,7 @@ class GateioProSuperTrendBot:
         self.trade_history.append(record)
         self.save_trade_history()
         self.log(
-            f"📝 매매 기록 저장: {side.upper()} {entry_price} → {exit_price} | {reason} | "
+            f"📝 매매 기록 저장: {side.upper()} {entry_price:.0f} → {exit_price:.0f} | {reason} | "
             f"가격변동 {price_return_pct:+.2f}% (레버리지 반영 {leveraged_return_pct:+.2f}%) | 수익금 {profit_usdt:+.2f} USDT"
         )
 
@@ -750,6 +750,10 @@ class GateioProSuperTrendBot:
             self.log(f"⚠️ 잔고 조회 실패: {e}")
             return None
 
+    # 수수료/정밀도 오차로 100% 설정 시 주문이 거부되는 문제를 막기 위한 안전 여유분(%p).
+    # 화면에 표시/저장되는 설정값 자체는 그대로 두고, 실제 주문 계산에만 적용한다.
+    BALANCE_PCT_SAFETY_MARGIN = 5.0
+
     def resolve_order_amount_usdt(self, amount_mode, fixed_amount_usdt, balance_pct, leverage):
         """모드에 따라 이번 진입에 사용할 USDT 주문 금액을 결정한다.
         잔고 비율 모드에서는 진입 시점마다 실제 잔고를 다시 조회해 계산하므로,
@@ -762,8 +766,13 @@ class GateioProSuperTrendBot:
             self.log("⚠️ 잔고 조회 실패 또는 잔고 0 — 이번 주기 진입을 보류합니다.")
             return None, None
 
+        # 설정값에서 안전 여유분(기본 2%p)을 뺀 값으로 실제 계산 (설정값 자체는 안 바뀜)
+        effective_pct = max(0.0, balance_pct - self.BALANCE_PCT_SAFETY_MARGIN)
+        if effective_pct != balance_pct:
+            self.log(f"ℹ️ 설정값 {balance_pct}% → 수수료 여유분 확보를 위해 실제 계산에는 {effective_pct}% 적용")
+
         # 레버리지 적용된 금액 = 잔고 × 레버리지 × 사용비율(%)
-        order_amount = balance * leverage * (balance_pct / 100.0)
+        order_amount = balance * leverage * (effective_pct / 100.0)
         return order_amount, balance
 
     def btc_amount_to_contracts(self, btc_amount):
@@ -881,6 +890,9 @@ class GateioProSuperTrendBot:
         last_signal = None
         trailing_extreme = None  # 진입 후 최고가(롱) / 최저가(숏) — 트레일링 스탑 기준점
 
+        STATUS_LOG_INTERVAL_SEC = 60  # 화면에 상태 로그를 찍는 주기 (매매 판단 주기와는 별개)
+        last_status_log_time = 0
+
         while self.is_running:
             try:
                 ticker = self.exchange.fetch_ticker(self.symbol)
@@ -915,14 +927,19 @@ class GateioProSuperTrendBot:
                     except Exception:
                         contract_size = 0.0001
                     position_usdt = position['size'] * contract_size * current_price
-                    pos_status = f"{position['side'].upper()}({position_usdt:.2f}USDT)"
+                    pos_status = f"{position['side'].upper()}({position_usdt:.0f}USDT)"
                 else:
                     pos_status = "없음"
-                entry_price_status = f"{position['entry_price']:.2f}" if position['side'] != 'none' else "-"
-                self.log(
-                    f"현재가: {current_price} | 추세: "
-                    f"{'🟢 LONG' if signal == 1.0 else '🔴 SHORT'} | 진입가: {entry_price_status} | 포지션: {pos_status}"
-                )
+                entry_price_status = f"{position['entry_price']:.0f}" if position['side'] != 'none' else "-"
+
+                # 매매 판단 자체는 매 주기(10초)마다 계속 수행하되, 화면 로그 출력만 60초에 한 번으로 제한
+                now_ts = time.time()
+                if now_ts - last_status_log_time >= STATUS_LOG_INTERVAL_SEC:
+                    self.log(
+                        f"현재가: {current_price:.0f} | 추세: "
+                        f"{'🟢 LONG' if signal == 1.0 else '🔴 SHORT'} | 진입가: {entry_price_status} | 포지션: {pos_status}"
+                    )
+                    last_status_log_time = now_ts
 
                 if last_signal is None:
                     last_signal = signal
@@ -946,8 +963,8 @@ class GateioProSuperTrendBot:
                         trailing_extreme = current_price if trailing_extreme is None else max(trailing_extreme, current_price)
                         stop_price = trailing_extreme - atr_value * atr_multiplier
                         if current_price <= stop_price:
-                            self.log(f"🎯 [ATR 트레일링 청산] 롱 포지션 — 현재가 {current_price} ≤ 청산선 {stop_price:.2f} "
-                                      f"(진입후 최고가 {trailing_extreme:.2f} - ATR×{atr_multiplier})")
+                            self.log(f"🎯 [ATR 트레일링 청산] 롱 포지션 — 현재가 {current_price:.0f} ≤ 청산선 {stop_price:.0f} "
+                                      f"(진입후 최고가 {trailing_extreme:.0f} - ATR×{atr_multiplier})")
                             order = self.execute_market_order('sell', position['size'], reduce_only=True)
                             if order is not None:
                                 self.log("✅ 롱 ATR 트레일링 청산 완료 (다음 추세 전환까지 대기)")
@@ -962,8 +979,8 @@ class GateioProSuperTrendBot:
                         trailing_extreme = current_price if trailing_extreme is None else min(trailing_extreme, current_price)
                         stop_price = trailing_extreme + atr_value * atr_multiplier
                         if current_price >= stop_price:
-                            self.log(f"🎯 [ATR 트레일링 청산] 숏 포지션 — 현재가 {current_price} ≥ 청산선 {stop_price:.2f} "
-                                      f"(진입후 최저가 {trailing_extreme:.2f} + ATR×{atr_multiplier})")
+                            self.log(f"🎯 [ATR 트레일링 청산] 숏 포지션 — 현재가 {current_price:.0f} ≥ 청산선 {stop_price:.0f} "
+                                      f"(진입후 최저가 {trailing_extreme:.0f} + ATR×{atr_multiplier})")
                             order = self.execute_market_order('buy', position['size'], reduce_only=True)
                             if order is not None:
                                 self.log("✅ 숏 ATR 트레일링 청산 완료 (다음 추세 전환까지 대기)")
@@ -1019,15 +1036,15 @@ class GateioProSuperTrendBot:
 
                         if amount_mode == "balance_pct":
                             self.log(
-                                f"ℹ️ 복리 계산: 잔고 {fetched_balance:.2f} USDT × 레버리지 {self._current_leverage}배 × "
-                                f"{balance_pct}% = {order_amount_usdt:.2f} USDT"
+                                f"ℹ️ 복리 계산: 잔고 {fetched_balance:.0f} USDT × 레버리지 {self._current_leverage}배 × "
+                                f"{balance_pct}% = {order_amount_usdt:.0f} USDT"
                             )
 
                         entry_contracts, entry_contract_size, entry_actual_btc, entry_actual_usdt = \
                             self.usdt_amount_to_contracts(order_amount_usdt, current_price)
                         self.log(
-                            f"ℹ️ 진입 수량 환산: {order_amount_usdt:.2f} USDT (현재가 {current_price}) → "
-                            f"{entry_contracts}계약 ≈ {entry_actual_btc:.6f} BTC ≈ {entry_actual_usdt:.2f} USDT"
+                            f"ℹ️ 진입 수량 환산: {order_amount_usdt:.0f} USDT (현재가 {current_price:.0f}) → "
+                            f"{entry_contracts}계약 ≈ {entry_actual_btc:.6f} BTC ≈ {entry_actual_usdt:.0f} USDT"
                         )
                         if signal == 1.0:
                             self.log("🚀 LONG 포지션 신규 진입")

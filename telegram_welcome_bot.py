@@ -39,6 +39,17 @@ PROGRAM_DOWNLOAD_URL = "https://github.com/haesung-bot/Bitcoin-Trading/releases/
 # 텔레그램 앱 → 설정 → 프로필 편집에서 @username을 만들거나 확인할 수 있습니다.
 OPERATOR_PROFILE_LINK = "https://t.me/hhyuk0101"
 
+# ⚠️ 코드 발급 알림을 받을 본인의 텔레그램 고유 ID.
+# 모르면 이 봇에게 /whoami 라고 보내면 알려줍니다.
+ADMIN_NOTIFY_ID = int(os.environ.get("ADMIN_NOTIFY_ID", "123456789"))
+
+# ─────────────────────────────────────────────────────────
+# 발급 코드 유효기간 설정
+# None = 무기한 코드 발급 (지금은 신규 유저 유입 목적으로 이 상태)
+# 나중에 유저가 많아지면 숫자로 바꾸세요 (예: 7 → 7일짜리 체험 코드로 전환)
+# ─────────────────────────────────────────────────────────
+TRIAL_DURATION_DAYS = None
+
 FAQ_FILE_PATH = "faq.json"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -89,18 +100,21 @@ def save_issued_user(user_id, code):
         logger.error(f"발급 기록 저장 실패: {e}")
 
 
-# ─── [3-2. Render 서버 연동 7일 코드 발급 함수] ───
-def generate_7day_code():
+# ─── [3-2. Render 서버 연동 코드 발급 함수 (무기한/기간제는 TRIAL_DURATION_DAYS로 전환)] ───
+def generate_trial_code():
     url = f"{LICENSE_SERVER_URL}/admin/generate"
     headers = {
         "X-Admin-Secret": ADMIN_SECRET,
         "Content-Type": "application/json"
     }
-    # 7일권 발급 (서버는 duration_days 파라미터만 인식함 — duration_seconds는 지원 안 함!)
-    body = {
-        "note": "텔레그램 자동 유입 유저 (7일 체험)",
-        "duration_days": 7
-    }
+    if TRIAL_DURATION_DAYS is not None:
+        note = f"텔레그램 자동 유입 유저 ({TRIAL_DURATION_DAYS}일 체험)"
+        body = {"note": note, "duration_days": TRIAL_DURATION_DAYS}
+    else:
+        # duration_days를 아예 안 보내면 서버가 무기한 코드로 발급함
+        note = "텔레그램 자동 유입 유저 (무기한, 신규유치 임시운영)"
+        body = {"note": note}
+
     try:
         res = requests.post(url, headers=headers, json=body, timeout=10)
         if res.status_code == 200:
@@ -141,11 +155,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = context.bot.username
 
     if query.data == "want_bot":
+        duration_label = f"{TRIAL_DURATION_DAYS}일" if TRIAL_DURATION_DAYS is not None else "무기한"
         go_private_text = (
             "좋은 선택입니다! 👍\n"
             "아래 '개인 채팅방 가기' 버튼을 누른 후, "
             "화면 하단의 **[시작(Start)]** 버튼을 눌러주시면 "
-            "즉시 프로그램 다운로드 링크와 7일 무료 라이선스 코드를 발급해 드립니다!"
+            f"즉시 프로그램 다운로드 링크와 {duration_label} 무료 라이선스 코드를 발급해 드립니다!"
         )
         keyboard = [[InlineKeyboardButton("💬 개인 채팅방 가기 (클릭)", url=f"https://t.me/{bot_username}?start=welcome")]]
         await query.edit_message_text(text=go_private_text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -175,7 +190,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1. 라이선스 코드를 Render 서버에서 즉시 받아옴
     #    (동기 함수라 그냥 부르면 봇 전체가 멈추므로, 별도 스레드에서 실행)
-    license_code = await asyncio.to_thread(generate_7day_code)
+    license_code = await asyncio.to_thread(generate_trial_code)
     
     if not license_code:
         await update.message.reply_text("⚠️ 현재 라이선스 서버 점검 중입니다. 잠시 후 다시 /start 를 입력해 주세요.")
@@ -184,9 +199,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 발급 성공 시 이 유저는 "이미 받음"으로 즉시 기록 (중복 발급 방지)
     save_issued_user(user_id, license_code)
 
+    duration_label = f"{TRIAL_DURATION_DAYS}일" if TRIAL_DURATION_DAYS is not None else "무기한"
+
+    # 운영자에게 발급 알림 전송 (실패해도 사용자 흐름에는 영향 없게 조용히 처리)
+    try:
+        requester = update.effective_user
+        await context.bot.send_message(
+            chat_id=ADMIN_NOTIFY_ID,
+            text=(
+                f"🔔 새 코드 발급 알림\n\n"
+                f"유저: {requester.first_name or ''}"
+                f"({'@' + requester.username if requester.username else requester.id})\n"
+                f"코드: `{license_code}`\n"
+                f"유효기간: {duration_label}"
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"운영자 알림 전송 실패: {e}")
+
     # 2. 다운로드 가이드 및 라이선스 코드 안내 (버튼 결합)
     guide_text = (
-        f"✅ **7일 무료 라이선스 및 프로그램 발급 완료**\n\n"
+        f"✅ **{duration_label} 무료 라이선스 및 프로그램 발급 완료**\n\n"
         f"🔑 체험 코드: `{license_code}`\n\n"
         f"아래 '프로그램 다운로드' 버튼을 클릭하여 압축파일을 내려받으신 후, "
         f"실행 창에 위 코드를 복사해서 붙여넣으시면 즉시 자동매매가 시작됩니다.\n\n"
@@ -198,7 +232,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(guide_text, reply_markup=reply_markup, parse_mode="Markdown")
 
-# ─── [7. 개인방 1:1 FAQ 자동 응답 무인화] ───
+# ─── [7-1. 내 텔레그램 ID 확인용 명령어] ───
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await update.message.reply_text(
+        f"당신의 텔레그램 ID: {user.id}\n"
+        f"(닉네임: {user.first_name or ''} {'@' + user.username if user.username else ''})"
+    )
+
+
+# ─── [7-2. 개인방 1:1 FAQ 자동 응답 무인화] ───
 async def handle_faq_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
@@ -233,6 +276,7 @@ def main():
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_new_member))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_faq_chat))
 
     print("🚀 완전 자동화 텔레그램 봇 기동 시작...", flush=True)
