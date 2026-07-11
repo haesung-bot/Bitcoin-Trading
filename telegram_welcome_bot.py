@@ -41,7 +41,7 @@ OPERATOR_PROFILE_LINK = "https://t.me/hhyuk0101"
 
 # ⚠️ 코드 발급 알림을 받을 본인의 텔레그램 고유 ID.
 # 모르면 이 봇에게 /whoami 라고 보내면 알려줍니다.
-ADMIN_NOTIFY_ID = int(os.environ.get("ADMIN_NOTIFY_ID", "123456789"))
+ADMIN_NOTIFY_ID = int(os.environ.get("ADMIN_NOTIFY_ID", "66721231"))
 
 # ─────────────────────────────────────────────────────────
 # 발급 코드 유효기간 설정
