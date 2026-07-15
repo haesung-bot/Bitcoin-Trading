@@ -99,7 +99,17 @@ def _check_token_remote(token):
             timeout=30  # Render 무료 플랜의 콜드스타트(최대 30초 정도 걸림)를 감안해 넉넉하게
         )
         data = resp.json()
-        return ("valid", None) if data.get("ok") else ("invalid", None)
+        if data.get("ok"):
+            # 서버가 토큰을 새로 발급해줬으면(=기존 토큰의 24시간이 지나 갱신된 경우)
+            # 캐시의 토큰을 새 값으로 교체해 둔다. 이렇게 해야 무기한 코드가
+            # 24시간 뒤 '만료'로 오인돼 프로그램이 꺼지는 일이 없어진다.
+            new_token = data.get("token")
+            if new_token and new_token != token:
+                cache = _load_cache()
+                cache["token"] = new_token
+                _save_cache(cache)
+            return "valid", None
+        return "invalid", None
     except requests.exceptions.RequestException as e:
         return "unreachable", str(e)  # 네트워크 문제 — 차단으로 오인하면 안 됨, 원인은 detail에 담아 전달
 

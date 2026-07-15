@@ -228,6 +228,7 @@ def issue_token(code, device_id):
 
 
 def validate_token(token, device_id):
+    # (구버전 호환용으로 남겨둠 — 현재 /api/check_token은 아래 parse_token을 사용한다)
     try:
         code, token_device_id, expires_at, signature = token.rsplit(":", 3)
         payload = f"{code}:{token_device_id}:{expires_at}"
@@ -241,6 +242,22 @@ def validate_token(token, device_id):
         return True, {"code": code, "device_id": token_device_id}
     except Exception as e:
         return False, f"토큰 형식 오류: {e}"
+
+
+def parse_token(token):
+    """토큰의 '서명'만 검증한다. 서명이 맞으면 (code, device_id, expires_at)을 반환.
+    ⚠️ 여기서는 '시간 만료'를 실패로 보지 않는다. 토큰의 24시간 유효기간이 지난 것은
+    '차단'이 아니라 '토큰을 새로 발급해줄 시점'일 뿐이므로, 만료 판단은 호출한 쪽에서 따로 한다.
+    서명이 틀렸거나(위조) 형식이 깨졌으면 None을 반환한다."""
+    try:
+        code, token_device_id, expires_at, signature = token.rsplit(":", 3)
+        payload = f"{code}:{token_device_id}:{expires_at}"
+        expected_sig = hmac.new(SERVER_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected_sig):
+            return None
+        return code, token_device_id, int(expires_at)
+    except Exception:
+        return None
 
 
 def _check_admin_auth():
@@ -295,13 +312,18 @@ def api_check_token():
     token = data.get("token", "")
     device_id = data.get("device_id", "")
 
-    valid, info = validate_token(token, device_id)
-    if not valid:
-        return jsonify({"ok": False, "error": info}), 403
+    # 1) 토큰의 '서명'만 먼저 확인한다. (시간 만료는 여기서 실패로 보지 않는다)
+    parsed = parse_token(token)
+    if parsed is None:
+        return jsonify({"ok": False, "error": "위조되었거나 형식이 잘못된 토큰입니다."}), 403
+    code, token_device_id, token_expires_at = parsed
 
-    # 서명/만료/기기일치가 유효해도, 그 사이 관리자가 차단했거나
-    # 기기 바인딩을 초기화했거나 기간이 만료됐을 수 있으므로 현재 DB 상태를 다시 확인
-    record = get_code(info["code"])
+    if token_device_id != device_id:
+        return jsonify({"ok": False, "error": "다른 기기에서 발급된 토큰입니다 (기기 불일치)."}), 403
+
+    # 2) '진짜 차단/만료 여부'는 항상 DB의 최신 상태로 판단한다.
+    #    (관리자가 차단했거나, 기간제 코드의 이용기간이 끝났거나, 기기 바인딩이 바뀐 경우만 진짜 차단)
+    record = get_code(code)
     if record is None or record["status"] == "blocked":
         return jsonify({"ok": False, "error": "코드가 차단되었거나 존재하지 않습니다."}), 403
     if is_expired(record):
@@ -309,7 +331,20 @@ def api_check_token():
     if record.get("bound_device_id") != device_id:
         return jsonify({"ok": False, "error": "기기 바인딩이 변경되었습니다. 다시 인증해주세요."}), 403
 
-    return jsonify({"ok": True, "info": info})
+    # 3) 여기까지 왔다면 코드는 정상적으로 살아있는 상태다.
+    #    토큰의 24시간이 지나 시간만료됐을 뿐이라면, 프로그램을 끄는 게 아니라
+    #    '새 토큰을 발급'해서 돌려준다. 클라이언트는 이 새 토큰을 받아 캐시를 갱신한다.
+    refreshed = False
+    if int(time.time()) > int(token_expires_at):
+        token = issue_token(code, device_id)
+        refreshed = True
+
+    return jsonify({
+        "ok": True,
+        "token": token,          # 갱신됐을 수도, 그대로일 수도 있음
+        "refreshed": refreshed,
+        "info": {"code": code, "device_id": device_id}
+    })
 
 
 @app.route("/health", methods=["GET"])
