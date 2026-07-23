@@ -6,6 +6,8 @@ hedged_martingale_bot.py
 - 롱/숏은 완전히 독립된 상태머신(MartingaleModule)이며 서로의 진입/청산에 영향을 주지 않는다.
 - 시세는 바이낸스 선물 공개 REST API(인증 불필요)에서 15분봉 종가를 가져온다.
 - 실거래 시에만 ccxt로 Hedge Mode(양방향 포지션) + 레버리지 10배를 계좌에 설정한다.
+- 추세장에서 마틴게일이 반복 손절되는 것을 막기 위해, 연속 손절이 MAX_CONSECUTIVE_SL(기본 3)회
+  누적되면 해당 방향(롱 또는 숏)만 자동 정지되고 텔레그램으로 통지된다(수동 재시작 전까지 재진입 안 함).
 
 사용법:
     python hedged_martingale_bot.py --selftest      # 가상 차트로 진입 조건 정성 테스트
@@ -43,6 +45,7 @@ STEP_TRIGGER_PCT = 0.003        # 평단가 대비 0.3% 역방향 이동 시 물
 TP_PCT = 0.003                  # 평단가 대비 0.3% 순방향 이동 시 익절
 MAX_STEPS = 4                   # 1배 -> 2배 -> 4배 -> 8배
 COOLDOWN_SEC = 180              # 청산 후 재진입 대기 3분
+MAX_CONSECUTIVE_SL = int(os.environ.get("MAX_CONSECUTIVE_SL", "3"))  # 연속 손절 N회 시 해당 방향 자동 정지
 RSI_PERIOD = 14
 RSI_LONG_TRIGGER = 40.0
 RSI_SHORT_TRIGGER = 60.0
@@ -178,14 +181,29 @@ class LiveBroker:
         bal = self.exchange.fetch_balance()
         return float(bal.get("USDT", {}).get("free", 0.0))
 
+    def _check_min_notional(self, qty: float, price: float) -> None:
+        try:
+            market = self.exchange.market(self.symbol)
+            limits = market.get("limits", {}) or {}
+            min_amount = (limits.get("amount") or {}).get("min")
+            min_cost = (limits.get("cost") or {}).get("min")
+            if min_amount and qty < min_amount:
+                logger.warning("주문 수량 %.8f이 거래소 최소 수량 %.8f보다 작습니다. 주문이 거부될 수 있습니다.", qty, min_amount)
+            if min_cost and qty * price < min_cost:
+                logger.warning("주문 금액 %.2f이 거래소 최소 주문금액 %.2f보다 작습니다. 주문이 거부될 수 있습니다.", qty * price, min_cost)
+        except Exception as e:
+            logger.debug("최소 주문 조건 확인 실패(무시): %s", e)
+
     def fill_order(self, side: Side, is_entry: bool, qty: float, price: float) -> None:
+        qty = float(self.exchange.amount_to_precision(self.symbol, qty))
+        self._check_min_notional(qty, price)
         if side == Side.LONG:
             order_side = "buy" if is_entry else "sell"
         else:
             order_side = "sell" if is_entry else "buy"
+        # Hedge Mode에서는 positionSide(LONG/SHORT)만으로 방향이 정해지므로
+        # reduceOnly를 함께 보내면 거래소(바이낸스 등)가 주문을 거부한다.
         params = {"positionSide": side.value}
-        if not is_entry:
-            params["reduceOnly"] = True
         self.exchange.create_order(self.symbol, "market", order_side, qty, None, params)
 
     def apply_pnl(self, pnl: float) -> None:
@@ -219,6 +237,8 @@ class MartingaleModule:
         self.notifier = notifier
         self.qty_provider = qty_provider
         self.mode_label = mode_label
+        self.consecutive_sl = 0
+        self.halted = False
         self._reset()
 
     def _reset(self) -> None:
@@ -227,6 +247,11 @@ class MartingaleModule:
         self.avg_price: Optional[float] = None
         self.total_qty = 0.0
         self.cooldown_until: Optional[float] = None
+
+    def resume(self) -> None:
+        """회로차단기로 정지된 모듈을 수동으로 재개한다."""
+        self.halted = False
+        self.consecutive_sl = 0
 
     @property
     def in_position(self) -> bool:
@@ -255,7 +280,7 @@ class MartingaleModule:
 
     def on_tick(self, price: float, rsi: Optional[float], bb: Optional[Tuple[float, float, float]], now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
-        if rsi is None or bb is None:
+        if self.halted or rsi is None or bb is None:
             return
 
         if not self.in_position:
@@ -307,13 +332,25 @@ class MartingaleModule:
         pnl = self._close_all(price)
         self._notify_close(price, "익절(TP)", pnl)
         self._reset()
+        self.consecutive_sl = 0
         self.cooldown_until = time.time() + COOLDOWN_SEC
 
     def _stop_loss(self, price: float) -> None:
         pnl = self._close_all(price)
         self._notify_close(price, "하드 손절(SL) → 모듈 리셋", pnl)
         self._reset()
+        self.consecutive_sl += 1
         self.cooldown_until = time.time() + COOLDOWN_SEC
+        if self.consecutive_sl >= MAX_CONSECUTIVE_SL:
+            self.halted = True
+            self._notify_halt()
+
+    def _notify_halt(self) -> None:
+        self.notifier.send(
+            f"[{self.mode_label}] {self.side.value} 자동 정지(회로차단기 작동)\n"
+            f"연속 손절 {self.consecutive_sl}회 발생 → 추세 역행 반복 가능성.\n"
+            f"수동으로 재시작하거나 resume()을 호출해야 다시 진입합니다."
+        )
 
     def _notify_entry(self, price: float, qty: float) -> None:
         self.notifier.send(
