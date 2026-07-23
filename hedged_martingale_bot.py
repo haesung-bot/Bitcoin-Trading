@@ -453,16 +453,47 @@ def run_self_test() -> None:
     print("=" * 60)
 
 
+def run_telegram_test() -> None:
+    """TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수로 실제 발송이 되는지 확인한다."""
+    print("=" * 60)
+    print("텔레그램 알림 발송 테스트")
+    print("=" * 60)
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
+        print("예) export TELEGRAM_BOT_TOKEN=... / export TELEGRAM_CHAT_ID=...")
+        return
+    notifier = TelegramNotifier()
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    text = "[hedged_martingale_bot] 텔레그램 알림 발송 테스트입니다. 이 메시지가 보이면 정상 연결된 것입니다."
+    try:
+        resp = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
+        body = resp.json()
+    except Exception as e:
+        print(f"전송 요청 자체가 실패했습니다(네트워크/토큰 확인): {e}")
+        return
+    if resp.status_code == 200 and body.get("ok"):
+        print("전송 성공! 텔레그램 앱에서 메시지를 확인하세요.")
+    else:
+        print(f"전송 실패 (HTTP {resp.status_code}): {body}")
+        print("chat_id가 정확한지, 봇에게 먼저 메시지를 보냈는지 확인하세요.")
+    print("=" * 60)
+
+
 # ───────────── 실행 진입점 ─────────────
 def main() -> None:
     parser = argparse.ArgumentParser(description="비트코인 10배 레버리지 양방향 마틴게일 자동매매 봇")
     parser.add_argument("--selftest", action="store_true", help="가상 차트 데이터로 진입 조건 정성 테스트만 실행")
+    parser.add_argument("--telegram-test", action="store_true", help="텔레그램 알림이 실제로 오는지 테스트 발송만 하고 종료")
     parser.add_argument("--live", action="store_true", help="실거래 모드로 실행 (기본값: 모의매매)")
     parser.add_argument("--poll-sec", type=int, default=30, help="가격 조회 주기(초)")
     args = parser.parse_args()
 
     if args.selftest:
         run_self_test()
+        return
+
+    if args.telegram_test:
+        run_telegram_test()
         return
 
     notifier = TelegramNotifier()
