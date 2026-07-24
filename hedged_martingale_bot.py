@@ -3,15 +3,20 @@ hedged_martingale_bot.py
 비트코인 10배 레버리지 양방향(Hedge Mode) 마틴게일 자동매매 모듈
 
 - 기본 실행 모드: 모의 매매(Paper Trading). 실거래는 --live 옵션 + API 키가 있을 때만 동작.
+- 기본 거래소는 Gate.io 무기한 선물(USDT-M swap). EXCHANGE_ID 환경변수로 다른 ccxt 지원 거래소로 변경 가능.
 - 롱/숏은 완전히 독립된 상태머신(MartingaleModule)이며 서로의 진입/청산에 영향을 주지 않는다.
-- 시세는 바이낸스 선물 공개 REST API(인증 불필요)에서 15분봉 종가를 가져온다.
-- 실거래 시에만 ccxt로 Hedge Mode(양방향 포지션) + 레버리지 10배를 계좌에 설정한다.
+- 시세(15분봉 종가)는 실제 매매할 거래소(EXCHANGE_ID)에서 ccxt 공개 API로 직접 가져온다(인증 불필요).
+- 실거래 시에만 ccxt로 Hedge Mode(Gate.io는 Dual Mode) + 레버리지 10배를 계좌에 설정한다.
+- Gate.io Dual Mode는 매수/매도 방향이 곧 롱/숏 슬롯을 가리키고, 청산 주문에만 reduceOnly를 붙인다.
+  바이낸스 Hedge Mode는 반대로 positionSide로 방향을 지정하고 reduceOnly는 보내면 안 된다(거래소별 분기 처리).
 - 추세장에서 마틴게일이 반복 손절되는 것을 막기 위해, 연속 손절이 MAX_CONSECUTIVE_SL(기본 3)회
   누적되면 해당 방향(롱 또는 숏)만 자동 정지되고 텔레그램으로 통지된다(수동 재시작 전까지 재진입 안 함).
 
+사전 준비: pip install ccxt requests  (--selftest만 쓸 경우 ccxt 없이도 동작)
+
 사용법:
-    python hedged_martingale_bot.py --selftest      # 가상 차트로 진입 조건 정성 테스트
-    python hedged_martingale_bot.py                 # 모의 매매로 실시간 루프 실행
+    python hedged_martingale_bot.py --selftest      # 가상 차트로 진입 조건 정성 테스트(네트워크 불필요)
+    python hedged_martingale_bot.py                 # 모의 매매로 실시간 루프 실행 (Gate.io 실시세 사용)
     python hedged_martingale_bot.py --live           # 실거래 (EXCHANGE_API_KEY/SECRET 환경변수 필요)
 """
 
@@ -34,10 +39,26 @@ try:
 except ImportError:
     ccxt = None
 
+# ccxt 버전에 따라 거래소 클래스 이름이 다를 수 있다(예: Gate.io는 gate/gateio).
+_EXCHANGE_CLASS_ALIASES = {
+    "gate": ("gate", "gateio"),
+    "gateio": ("gate", "gateio"),
+}
+
+
+def _resolve_exchange_class(exchange_id: str):
+    if ccxt is None:
+        raise RuntimeError("ccxt가 설치되어 있지 않습니다. 'pip install ccxt'를 실행하세요.")
+    for candidate in _EXCHANGE_CLASS_ALIASES.get(exchange_id, (exchange_id,)):
+        cls = getattr(ccxt, candidate, None)
+        if cls is not None:
+            return cls
+    raise RuntimeError(f"ccxt에서 거래소 '{exchange_id}'를 찾을 수 없습니다. 'pip install -U ccxt'로 업데이트하세요.")
+
 
 # ───────────── 전략 설정값 ─────────────
+EXCHANGE_ID = os.environ.get("EXCHANGE_ID", "gateio")   # gateio, binance 등 ccxt 지원 거래소
 SYMBOL = os.environ.get("SYMBOL", "BTC/USDT:USDT")
-BINANCE_PUBLIC_SYMBOL = os.environ.get("BINANCE_PUBLIC_SYMBOL", "BTCUSDT")
 TIMEFRAME = "15m"
 LEVERAGE = 10
 INITIAL_MARGIN_PCT = 0.02       # 1차 진입 마진 = 계좌 잔고의 2%
@@ -112,18 +133,19 @@ class TelegramNotifier:
 
 
 # ───────────── 시세 데이터 (공개 API, 인증 불필요) ─────────────
-class BinancePublicMarketData:
-    def __init__(self, symbol: str = BINANCE_PUBLIC_SYMBOL, timeframe: str = TIMEFRAME, limit: int = 100):
+class PublicMarketData:
+    """실제 매매할 거래소(EXCHANGE_ID)와 동일한 곳에서 ccxt 공개 API로 캔들을 가져온다. API 키 불필요."""
+
+    def __init__(self, exchange_id: str = EXCHANGE_ID, symbol: str = SYMBOL, timeframe: str = TIMEFRAME, limit: int = 100):
+        exchange_cls = _resolve_exchange_class(exchange_id)
+        self.exchange = exchange_cls({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         self.symbol = symbol
         self.timeframe = timeframe
         self.limit = limit
 
     def get_closes(self) -> List[float]:
-        url = "https://fapi.binance.com/fapi/v1/klines"
-        params = {"symbol": self.symbol, "interval": self.timeframe, "limit": self.limit}
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        return [float(row[4]) for row in resp.json()]
+        candles = self.exchange.fetch_ohlcv(self.symbol, timeframe=self.timeframe, limit=self.limit)
+        return [float(c[4]) for c in candles]
 
 
 # ───────────── 브로커(체결/잔고) ─────────────
@@ -151,27 +173,33 @@ class PaperBroker:
         self.balance += pnl
 
 
+_EXCHANGE_DEFAULT_TYPE = {
+    "gate": "swap",
+    "gateio": "swap",
+    "binance": "future",
+}
+
+
 class LiveBroker:
-    """실거래 브로커. 최초 연결 시 계좌에 Hedge Mode(양방향)와 레버리지 10배를 설정한다."""
+    """실거래 브로커. 최초 연결 시 계좌에 Hedge Mode(Gate.io는 Dual Mode)와 레버리지 10배를 설정한다."""
 
     def __init__(self, exchange_id: str, api_key: str, api_secret: str, symbol: str = SYMBOL, leverage: int = LEVERAGE):
-        if ccxt is None:
-            raise RuntimeError("ccxt가 설치되어 있지 않습니다. 실거래 모드는 'pip install ccxt'가 필요합니다.")
-        exchange_cls = getattr(ccxt, exchange_id)
+        exchange_cls = _resolve_exchange_class(exchange_id)
+        self.exchange_id = exchange_id
         self.exchange = exchange_cls({
             "apiKey": api_key,
             "secret": api_secret,
             "enableRateLimit": True,
-            "options": {"defaultType": "future"},
+            "options": {"defaultType": _EXCHANGE_DEFAULT_TYPE.get(exchange_id, "swap")},
         })
         self.symbol = symbol
         self._setup_account(leverage)
 
     def _setup_account(self, leverage: int) -> None:
         try:
-            self.exchange.set_position_mode(hedged=True)
+            self.exchange.set_position_mode(hedged=True, symbol=self.symbol)
         except Exception as e:
-            logger.warning("Hedge Mode 설정 실패(이미 설정돼 있을 수 있음): %s", e)
+            logger.warning("Hedge/Dual Mode 설정 실패(이미 설정돼 있을 수 있음): %s", e)
         try:
             self.exchange.set_leverage(leverage, self.symbol)
         except Exception as e:
@@ -194,6 +222,15 @@ class LiveBroker:
         except Exception as e:
             logger.debug("최소 주문 조건 확인 실패(무시): %s", e)
 
+    def _order_params(self, side: Side, is_entry: bool) -> dict:
+        if self.exchange_id == "binance":
+            # 바이낸스 Hedge Mode: positionSide로 방향을 지정하며, reduceOnly를 함께 보내면
+            # "Parameter 'reduceOnly' sent when not required" 오류로 주문이 거부된다.
+            return {"positionSide": side.value}
+        # Gate.io Dual Mode(및 대부분의 reduceOnly 기반 거래소): 매수/매도 방향이 곧 롱/숏 슬롯을
+        # 가리키므로 positionSide가 없고, 청산 주문에만 reduceOnly를 붙여야 반대 포지션이 새로 열리지 않는다.
+        return {} if is_entry else {"reduceOnly": True}
+
     def fill_order(self, side: Side, is_entry: bool, qty: float, price: float) -> None:
         qty = float(self.exchange.amount_to_precision(self.symbol, qty))
         self._check_min_notional(qty, price)
@@ -201,9 +238,7 @@ class LiveBroker:
             order_side = "buy" if is_entry else "sell"
         else:
             order_side = "sell" if is_entry else "buy"
-        # Hedge Mode에서는 positionSide(LONG/SHORT)만으로 방향이 정해지므로
-        # reduceOnly를 함께 보내면 거래소(바이낸스 등)가 주문을 거부한다.
-        params = {"positionSide": side.value}
+        params = self._order_params(side, is_entry)
         self.exchange.create_order(self.symbol, "market", order_side, qty, None, params)
 
     def apply_pnl(self, pnl: float) -> None:
@@ -383,7 +418,7 @@ class HedgedMartingaleBot:
         self.long.on_tick(price, rsi, bb, now)
         self.short.on_tick(price, rsi, bb, now)
 
-    def run_forever(self, market_data: BinancePublicMarketData, poll_sec: int = 30) -> None:
+    def run_forever(self, market_data: PublicMarketData, poll_sec: int = 30) -> None:
         logger.info("자동매매 시작 (%s, 레버리지 %sx, %s)", self.long.mode_label, LEVERAGE, TIMEFRAME)
         while True:
             try:
@@ -462,7 +497,6 @@ def run_telegram_test() -> None:
         print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
         print("예) export TELEGRAM_BOT_TOKEN=... / export TELEGRAM_CHAT_ID=...")
         return
-    notifier = TelegramNotifier()
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     text = "[hedged_martingale_bot] 텔레그램 알림 발송 테스트입니다. 이 메시지가 보이면 정상 연결된 것입니다."
     try:
@@ -501,17 +535,17 @@ def main() -> None:
     if args.live:
         api_key = os.environ.get("EXCHANGE_API_KEY", "")
         api_secret = os.environ.get("EXCHANGE_API_SECRET", "")
-        exchange_id = os.environ.get("EXCHANGE_ID", "binance")
         if not api_key or not api_secret:
             raise SystemExit("실거래 모드는 EXCHANGE_API_KEY / EXCHANGE_API_SECRET 환경변수가 필요합니다.")
-        broker = LiveBroker(exchange_id, api_key, api_secret)
+        broker = LiveBroker(EXCHANGE_ID, api_key, api_secret)
         mode_label = "LIVE"
     else:
         broker = PaperBroker()
         mode_label = "PAPER"
 
     bot = HedgedMartingaleBot(broker, notifier, mode_label)
-    market_data = BinancePublicMarketData()
+    market_data = PublicMarketData()
+    logger.info("거래소: %s / 심볼: %s", EXCHANGE_ID, SYMBOL)
     bot.run_forever(market_data, poll_sec=args.poll_sec)
 
 
