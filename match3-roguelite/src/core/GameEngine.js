@@ -135,12 +135,17 @@ export class GameEngine {
           const m = this._lastMatch || { cells: new Set(), spawns: [] };
 
           // 1) 매치에 포함된 특수타일들을 연쇄 발동시켜 제거 범위를 확장
-          const cells = this._expandSpecials(m.cells);
+          //    (발동된 특수타일 정보는 연출용으로 fxSpecials에 수집)
+          const fxSpecials = [];
+          const cells = this._expandSpecials(m.cells, fxSpecials);
 
           // 2) 점수 계산
-          this._awardScore(cells.size);
+          const gained = this._awardScore(cells.size);
 
-          // 3) 제거 + 특수타일 스폰
+          // 3) 파괴 전에 위치/색 스냅샷 (연출용) — destroyCells가 null로 지우기 때문
+          const destroyed = this._snapshotCells(cells, m.spawns || []);
+
+          // 4) 제거 + 특수타일 스폰
           this.board.destroyCells(cells, m.spawns || []);
 
           // 4콤보(로켓급) 생성 시 퍽 보너스 이동
@@ -148,6 +153,17 @@ export class GameEngine {
             this.movesLeft += this.perks.extraMoveOn4;
             this._emit({ type: 'perk-extra-move', amount: this.perks.extraMoveOn4 });
           }
+
+          // 5) 연출 이벤트 방출
+          this._emitFx({
+            kind: 'destroy',
+            tiles: destroyed,
+            specials: fxSpecials,
+            spawns: m.spawns || [],
+            cascade: this.cascadeLevel,
+            score: gained,
+          });
+
           this._lastMatch = null;
         },
         update: () => {
@@ -262,7 +278,7 @@ export class GameEngine {
    * @param {Set<string>} baseCells
    * @returns {Set<string>}
    */
-  _expandSpecials(baseCells) {
+  _expandSpecials(baseCells, fxOut = null) {
     const result = new Set(baseCells);
     const queue = [];
     for (const key of baseCells) {
@@ -275,6 +291,8 @@ export class GameEngine {
       const t = queue.shift();
       if (activated.has(t.id)) continue;
       activated.add(t.id);
+      // 연출용: 발동 순간의 특수타일 위치/종류 기록
+      if (fxOut) fxOut.push({ type: t.special, row: t.row, col: t.col, rocketDir: t.rocketDir, color: t.color });
       const affected = this.board.activateSpecial(t);
       for (const key of affected) {
         result.add(key);
@@ -284,6 +302,19 @@ export class GameEngine {
       }
     }
     return result;
+  }
+
+  /** 파괴 직전 셀들의 위치/색을 스냅샷 (특수타일로 대체되는 칸은 제외) */
+  _snapshotCells(cells, spawns) {
+    const spawnKeys = new Set(spawns.map(s => `${s.row},${s.col}`));
+    const out = [];
+    for (const key of cells) {
+      if (spawnKeys.has(key)) continue; // 그 자리는 특수타일이 남으므로 파괴 연출 제외
+      const [r, c] = key.split(',').map(Number);
+      const t = this.board.grid[r][c];
+      if (t) out.push({ row: r, col: c, color: t.color });
+    }
+    return out;
   }
 
   /**
@@ -319,19 +350,31 @@ export class GameEngine {
     }
 
     this._consumeMove();
-    const expanded = this._expandSpecials(cells);
-    this._awardScore(expanded.size);
+    const fxSpecials = [];
+    const expanded = this._expandSpecials(cells, fxSpecials);
+    const gained = this._awardScore(expanded.size);
+    const destroyed = this._snapshotCells(expanded, []);
     this.board.destroyCells(expanded, []);
     this._lastMatch = null;
     this._emit({ type: 'combo', combo: types.join('+'), cleared: expanded.size });
+    // 콤보는 강력한 연출: 대형 화면 흔들림 + 발동 지점 표시
+    this._emitFx({
+      kind: 'combo',
+      combo: bothLightBall ? 'LIGHTBALL_LIGHTBALL' : rocketBomb ? 'ROCKET_BOMB' : 'MIX',
+      at: { row: a.row, col: a.col },
+      tiles: destroyed,
+      specials: fxSpecials,
+      score: gained,
+    });
   }
 
-  /** 점수 부여 (연쇄 단계 + 퍽 배율 반영) */
+  /** 점수 부여 (연쇄 단계 + 퍽 배율 반영). @returns {number} 획득 점수 */
   _awardScore(tileCount) {
     const per = SCORE.PER_TILE + SCORE.CASCADE_BONUS * Math.max(0, this.cascadeLevel - 1);
     const gained = Math.round(tileCount * per * this.perks.scoreMultiplier);
     this.score += gained;
     this._emit({ type: 'score', gained, total: this.score, cascade: this.cascadeLevel });
+    return gained;
   }
 
   _computeTargetScore(stage) {
@@ -369,4 +412,7 @@ export class GameEngine {
   }
 
   _emit(e) { if (this.hooks.onEvent) this.hooks.onEvent(e); }
+
+  /** 연출 전용 이벤트 (위치·색 정보 포함). 렌더/이펙트 레이어가 구독. */
+  _emitFx(fx) { if (this.hooks.onFx) this.hooks.onFx(fx); }
 }

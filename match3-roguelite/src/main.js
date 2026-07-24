@@ -4,6 +4,7 @@
 
 import { GameEngine } from './core/GameEngine.js';
 import { Renderer } from './render/Renderer.js';
+import { Effects } from './render/Effects.js';
 import { InputController } from './render/InputController.js';
 import { AdInterface } from './systems/AdInterface.js';
 import { PerkSystem } from './systems/PerkSystem.js';
@@ -22,12 +23,14 @@ const perkChoices = document.getElementById('perk-choices');
 
 // --- 시스템 인스턴스 ---
 const perkSystem = new PerkSystem();
+const effects = new Effects();
 let adInterface; // engine 생성 후 배선
 
 // --- 엔진 생성 (외부 콜백 연결) ---
 const engine = new GameEngine({
   onStateChange: (to) => { /* 디버그용: console.log(to) */ },
   onEvent: (e) => logEvent(e),
+  onFx: (fx) => effects.handle(fx), // 연출 이벤트 -> 이펙트 레이어
   onOutOfMoves: () => {
     // 스펙 #5: 이동 소진 -> 보상형 광고
     adInterface.onOutOfMoves();
@@ -44,7 +47,7 @@ const engine = new GameEngine({
 
 adInterface = new AdInterface(engine);
 
-const renderer = new Renderer(canvas, engine);
+const renderer = new Renderer(canvas, engine, effects);
 new InputController(canvas, engine, renderer);
 
 // --- HUD 갱신 ---
@@ -97,6 +100,7 @@ function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   engine.update(dt);
+  effects.update(dt);
   renderer.draw();
   updateHud();
   requestAnimationFrame(loop);
@@ -104,4 +108,4 @@ function loop(now) {
 requestAnimationFrame(loop);
 
 // 디버그: 전역 노출
-window.__game = { engine, renderer, perkSystem };
+window.__game = { engine, renderer, effects, perkSystem };

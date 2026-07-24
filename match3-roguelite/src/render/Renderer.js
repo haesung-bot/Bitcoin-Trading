@@ -9,11 +9,12 @@ import {
 } from '../core/Constants.js';
 
 export class Renderer {
-  constructor(canvas, engine) {
+  constructor(canvas, engine, effects = null) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.engine = engine;
-    this.selected = null; // 강조 표시할 타일
+    this.effects = effects;      // 연출 레이어 (선택)
+    this.selected = null;        // 강조 표시할 타일
 
     const w = BOARD_PADDING * 2 + BOARD_COLS * TILE_SIZE;
     const h = BOARD_PADDING * 2 + BOARD_ROWS * TILE_SIZE;
@@ -25,9 +26,14 @@ export class Renderer {
     const ctx = this.ctx;
     const { width, height } = this.canvas;
 
-    // 배경
+    // 배경 (흔들림 영향 없음 — 전체를 채워 가장자리 노출 방지)
     ctx.fillStyle = '#141a2e';
     ctx.fillRect(0, 0, width, height);
+
+    // 화면 흔들림: 보드/타일/파티클을 함께 이동
+    const shake = this.effects ? this.effects.getShakeOffset() : { x: 0, y: 0 };
+    ctx.save();
+    ctx.translate(shake.x, shake.y);
 
     // 보드 격자 배경
     for (let r = 0; r < BOARD_ROWS; r++) {
@@ -39,8 +45,7 @@ export class Renderer {
       }
     }
 
-    // 타일 (파괴 애니메이션 중인 것 포함해서 그리려면 별도 리스트 필요하나
-    //       여기서는 살아있는 그리드만 그린다)
+    // 타일 (살아있는 그리드; 파괴 연출은 Effects의 파티클이 대체)
     for (let r = 0; r < BOARD_ROWS; r++) {
       for (let c = 0; c < BOARD_COLS; c++) {
         const t = this.engine.board.grid[r][c];
@@ -55,6 +60,14 @@ export class Renderer {
       ctx.lineWidth = 4;
       ctx.strokeRect(t.px + 3, t.py + 3, TILE_SIZE - 6, TILE_SIZE - 6);
     }
+
+    // 연출 레이어 (보드 위에 겹침)
+    if (this.effects) this.effects.draw(ctx);
+
+    ctx.restore();
+
+    // 전체 화면 섬광 (흔들림 변환 밖, 캔버스 절대좌표)
+    if (this.effects) this.effects.drawOverlay(ctx, width, height);
   }
 
   _drawTile(t) {

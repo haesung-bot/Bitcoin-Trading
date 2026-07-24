@@ -11,6 +11,7 @@ const ORDER = [
   'src/core/GameEngine.js',
   'src/systems/PerkSystem.js',
   'src/systems/AdInterface.js',
+  'src/render/Effects.js',
   'src/render/Renderer.js',
   'src/render/InputController.js',
   'src/main.js',
