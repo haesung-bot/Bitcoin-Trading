@@ -27,6 +27,7 @@ import logging
 import math
 import os
 import random
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -73,6 +74,7 @@ RSI_SHORT_TRIGGER = 60.0
 BB_PERIOD = 20
 BB_STDDEV_MULT = 2.0
 PAPER_START_BALANCE = float(os.environ.get("PAPER_START_BALANCE", "10000"))
+POLL_SEC = int(os.environ.get("POLL_SEC", "30"))  # 가격 조회 주기(초)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -418,15 +420,20 @@ class HedgedMartingaleBot:
         self.long.on_tick(price, rsi, bb, now)
         self.short.on_tick(price, rsi, bb, now)
 
-    def run_forever(self, market_data: PublicMarketData, poll_sec: int = 30) -> None:
+    def run_forever(self, market_data: PublicMarketData, poll_sec: int = POLL_SEC, stop_event: Optional[threading.Event] = None) -> None:
         logger.info("자동매매 시작 (%s, 레버리지 %sx, %s)", self.long.mode_label, LEVERAGE, TIMEFRAME)
-        while True:
+        while stop_event is None or not stop_event.is_set():
             try:
                 closes = market_data.get_closes()
                 self.on_price(closes[-1], closes)
             except Exception as e:
                 logger.warning("루프 오류: %s", e)
-            time.sleep(poll_sec)
+            if stop_event is not None:
+                if stop_event.wait(poll_sec):
+                    break
+            else:
+                time.sleep(poll_sec)
+        logger.info("자동매매 루프가 정지되었습니다.")
 
 
 # ───────────── 가상 차트 데이터 정성 테스트 ─────────────
@@ -519,7 +526,7 @@ def main() -> None:
     parser.add_argument("--selftest", action="store_true", help="가상 차트 데이터로 진입 조건 정성 테스트만 실행")
     parser.add_argument("--telegram-test", action="store_true", help="텔레그램 알림이 실제로 오는지 테스트 발송만 하고 종료")
     parser.add_argument("--live", action="store_true", help="실거래 모드로 실행 (기본값: 모의매매)")
-    parser.add_argument("--poll-sec", type=int, default=30, help="가격 조회 주기(초)")
+    parser.add_argument("--poll-sec", type=int, default=POLL_SEC, help="가격 조회 주기(초)")
     args = parser.parse_args()
 
     if args.selftest:
