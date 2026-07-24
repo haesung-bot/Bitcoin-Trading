@@ -11,6 +11,9 @@ hedged_martingale_bot.py
   바이낸스 Hedge Mode는 반대로 positionSide로 방향을 지정하고 reduceOnly는 보내면 안 된다(거래소별 분기 처리).
 - 추세장에서 마틴게일이 반복 손절되는 것을 막기 위해, 연속 손절이 MAX_CONSECUTIVE_SL(기본 3)회
   누적되면 해당 방향(롱 또는 숏)만 자동 정지되고 텔레그램으로 통지된다(수동 재시작 전까지 재진입 안 함).
+- 실거래/모의매매 루프는 매 틱마다 롱/숏의 진행 상태(진입 단계, 체결 내역, 쿨다운, 연속손절 횟수)를
+  STATE_PATH 파일에 저장한다. 프로그램을 껐다 켜도 이 파일에서 상태를 복원해 이어서 진행하며,
+  실거래에서는 재시작 시 거래소의 실제 포지션 수량과 저장된 상태를 대조해 어긋나면 경고한다.
 
 사전 준비: pip install ccxt requests  (--selftest만 쓸 경우 ccxt 없이도 동작)
 
@@ -23,6 +26,7 @@ hedged_martingale_bot.py
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import os
@@ -75,6 +79,9 @@ BB_PERIOD = 20
 BB_STDDEV_MULT = 2.0
 PAPER_START_BALANCE = float(os.environ.get("PAPER_START_BALANCE", "10000"))
 POLL_SEC = int(os.environ.get("POLL_SEC", "30"))  # 가격 조회 주기(초)
+STATE_PATH = os.environ.get(
+    "STATE_PATH", os.path.join(os.path.expanduser("~"), ".hedged_martingale_bot_state.json")
+)  # 진행 중인 매매 상태(진입 단계/체결 내역/쿨다운) 저장 위치. 재시작 시 여기서 복원한다.
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -174,6 +181,9 @@ class PaperBroker:
     def apply_pnl(self, pnl: float) -> None:
         self.balance += pnl
 
+    def fetch_position_qty(self, side: Side) -> Optional[float]:
+        return None  # 모의매매는 거래소 실포지션이 없으므로 대조하지 않음
+
 
 _EXCHANGE_DEFAULT_TYPE = {
     "gate": "swap",
@@ -211,6 +221,22 @@ class LiveBroker:
     def get_balance(self) -> float:
         bal = self.exchange.fetch_balance()
         return float(bal.get("USDT", {}).get("free", 0.0))
+
+    def fetch_position_qty(self, side: Side) -> Optional[float]:
+        """재시작 시 저장된 상태와 대조하기 위해, 거래소에 실제로 열려있는 롱/숏 포지션의 BTC 수량을 조회한다."""
+        try:
+            positions = self.exchange.fetch_positions([self.symbol])
+        except Exception as e:
+            logger.warning("포지션 조회 실패(대조 생략): %s", e)
+            return None
+        target = side.value.lower()
+        for p in positions:
+            p_side = (p.get("side") or "").lower()
+            contracts = p.get("contracts") or 0
+            if p_side == target and contracts:
+                contract_size = p.get("contractSize") or 1
+                return abs(contracts) * contract_size
+        return 0.0
 
     def _to_contract_amount(self, qty_base: float) -> float:
         """BTC 수량을 거래소 주문 단위로 변환한다.
@@ -305,6 +331,27 @@ class MartingaleModule:
         """회로차단기로 정지된 모듈을 수동으로 재개한다."""
         self.halted = False
         self.consecutive_sl = 0
+
+    def to_state(self) -> dict:
+        return {
+            "step": self.step,
+            "fills": [{"price": f.price, "qty": f.qty} for f in self.fills],
+            "cooldown_until": self.cooldown_until,
+            "consecutive_sl": self.consecutive_sl,
+            "halted": self.halted,
+        }
+
+    def load_state(self, state: dict) -> None:
+        self.fills = [Fill(f["price"], f["qty"]) for f in state.get("fills", [])]
+        self.step = state.get("step", 0)
+        if self.fills:
+            self._recalc_avg()
+        else:
+            self.avg_price = None
+            self.total_qty = 0.0
+        self.cooldown_until = state.get("cooldown_until")
+        self.consecutive_sl = state.get("consecutive_sl", 0)
+        self.halted = state.get("halted", False)
 
     @property
     def in_position(self) -> bool:
@@ -423,18 +470,66 @@ class MartingaleModule:
 
 # ───────────── 봇 엔진 ─────────────
 class HedgedMartingaleBot:
-    def __init__(self, broker, notifier: TelegramNotifier, mode_label: str):
+    def __init__(self, broker, notifier: TelegramNotifier, mode_label: str, state_path: Optional[str] = None):
         self.broker = broker
         self.notifier = notifier
+        self.state_path = state_path
         qty_provider = make_qty_provider(broker)
         self.long = MartingaleModule(Side.LONG, broker, notifier, qty_provider, mode_label)
         self.short = MartingaleModule(Side.SHORT, broker, notifier, qty_provider, mode_label)
+        if self.state_path:
+            self._load_state()
+
+    def _load_state(self) -> None:
+        if not os.path.exists(self.state_path):
+            return
+        try:
+            with open(self.state_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            logger.warning("이전 매매 상태 파일을 읽지 못했습니다(무시하고 처음부터 시작): %s", e)
+            return
+        self.long.load_state(data.get("long", {}))
+        self.short.load_state(data.get("short", {}))
+        if self.long.in_position or self.short.in_position:
+            logger.info(
+                "이전 매매 상태를 복원했습니다 (LONG step=%d avg=%s / SHORT step=%d avg=%s)",
+                self.long.step, self.long.avg_price, self.short.step, self.short.avg_price,
+            )
+            self._reconcile_with_exchange()
+
+    def _reconcile_with_exchange(self) -> None:
+        """복원된 상태와 거래소의 실제 포지션 수량이 어긋나지 않는지 확인하고, 다르면 경고만 한다(자동 수정 안 함)."""
+        for module in (self.long, self.short):
+            if not module.in_position:
+                continue
+            actual_qty = self.broker.fetch_position_qty(module.side)
+            if actual_qty is None:
+                continue
+            if abs(actual_qty - module.total_qty) > max(module.total_qty * 0.01, 1e-8):
+                msg = (
+                    f"[경고] {module.side.value} 저장된 상태의 수량({module.total_qty:.6f})과 "
+                    f"거래소 실제 포지션 수량({actual_qty:.6f})이 다릅니다. 프로그램이 꺼져있는 동안 "
+                    f"수동 청산/추가 등이 있었을 수 있으니 직접 확인해주세요."
+                )
+                logger.warning(msg)
+                self.notifier.send(f"[{module.mode_label}] {msg}")
+
+    def _save_state(self) -> None:
+        if not self.state_path:
+            return
+        try:
+            with open(self.state_path, "w", encoding="utf-8") as f:
+                json.dump({"long": self.long.to_state(), "short": self.short.to_state()}, f)
+        except Exception as e:
+            logger.warning("매매 상태 저장 실패: %s", e)
 
     def on_price(self, price: float, closes_window: List[float], now: Optional[float] = None) -> None:
         rsi = Indicators.rsi(closes_window)
         bb = Indicators.bollinger(closes_window)
         self.long.on_tick(price, rsi, bb, now)
         self.short.on_tick(price, rsi, bb, now)
+        self._save_state()
 
     def run_forever(self, market_data: PublicMarketData, poll_sec: int = POLL_SEC, stop_event: Optional[threading.Event] = None) -> None:
         logger.info("자동매매 시작 (%s, 레버리지 %sx, %s)", self.long.mode_label, LEVERAGE, TIMEFRAME)
@@ -566,9 +661,9 @@ def main() -> None:
         broker = PaperBroker()
         mode_label = "PAPER"
 
-    bot = HedgedMartingaleBot(broker, notifier, mode_label)
+    bot = HedgedMartingaleBot(broker, notifier, mode_label, state_path=STATE_PATH)
     market_data = PublicMarketData()
-    logger.info("거래소: %s / 심볼: %s", EXCHANGE_ID, SYMBOL)
+    logger.info("거래소: %s / 심볼: %s / 상태 저장 위치: %s", EXCHANGE_ID, SYMBOL, STATE_PATH)
     bot.run_forever(market_data, poll_sec=args.poll_sec)
 
 

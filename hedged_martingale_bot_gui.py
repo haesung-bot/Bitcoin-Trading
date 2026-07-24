@@ -204,7 +204,7 @@ class HedgedMartingaleGUI:
         try:
             broker = core.LiveBroker(core.EXCHANGE_ID, api_key, api_secret)
             notifier = core.TelegramNotifier(core.TELEGRAM_BOT_TOKEN, core.TELEGRAM_CHAT_ID)
-            bot = core.HedgedMartingaleBot(broker, notifier, mode_label="LIVE")
+            bot = core.HedgedMartingaleBot(broker, notifier, mode_label="LIVE", state_path=core.STATE_PATH)
             market_data = core.PublicMarketData()
         except Exception as e:
             self._log(f"[오류] 계좌 연결 실패: {e}")
