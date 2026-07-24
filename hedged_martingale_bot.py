@@ -172,6 +172,9 @@ class PaperBroker:
     def get_balance(self) -> float:
         return self.balance
 
+    def quantize_qty(self, qty_btc: float, price: float) -> float:
+        return qty_btc  # 모의매매는 거래소 계약 단위가 없으므로 계산된 수량을 그대로 사용
+
     def fill_order(self, side: Side, is_entry: bool, qty: float, price: float) -> None:
         logger.info(
             "[모의체결] %s %s qty=%.6f price=%.2f",
@@ -225,7 +228,36 @@ class LiveBroker:
 
     def get_balance(self) -> float:
         bal = self.exchange.fetch_balance()
-        return float(bal.get("USDT", {}).get("free", 0.0))
+        usdt = bal.get("USDT", {}) or {}
+        free = usdt.get("free")
+        total = usdt.get("total")
+        # 게이트아이오 선물은 자금이 포지션 증거금에 묶이면 free=0이 될 수 있어, free가 0이면 total로 대체한다.
+        balance = free if free else (total or 0.0)
+        return float(balance)
+
+    def quantize_qty(self, qty_btc: float, price: float) -> float:
+        """계산된 BTC 수량을 거래소에서 실제 주문 가능한 값으로 보정해 BTC 단위로 돌려준다.
+
+        - 계약 스텝(예: 1계약=0.0001 BTC)에 맞춰 내림
+        - 그 결과가 거래소 최소 수량(보통 1계약)보다 작으면 최소 수량으로 상향
+          (계좌가 작아 2% 마진이 1계약에 못 미쳐도 매매가 진행되게 함)
+        """
+        market = self.exchange.market(self.symbol)
+        contract_size = market.get("contractSize") or 1
+        limits = market.get("limits", {}) or {}
+        min_contracts = (limits.get("amount") or {}).get("min") or 1
+        try:
+            contracts = float(self.exchange.amount_to_precision(self.symbol, round(qty_btc / contract_size, 8)))
+        except Exception:
+            contracts = 0.0
+        if contracts < min_contracts:
+            logger.warning(
+                "계산된 수량(%.8f BTC)이 거래소 최소 주문(%s계약=%.8f BTC)보다 작아 최소 수량으로 올려서 주문합니다. "
+                "이 경우 실제 리스크가 잔고의 2%%보다 커질 수 있습니다.",
+                qty_btc, min_contracts, min_contracts * contract_size,
+            )
+            contracts = float(min_contracts)
+        return contracts * contract_size
 
     def fetch_position_qty(self, side: Side) -> Optional[float]:
         """재시작 시 저장된 상태와 대조하기 위해, 거래소에 실제로 열려있는 롱/숏 포지션의 BTC 수량을 조회한다."""
@@ -269,20 +301,23 @@ class LiveBroker:
 
     def fill_order(self, side: Side, is_entry: bool, qty: float, price: float) -> None:
         # Gate.io 등 계약(contract) 기반 거래소는 주문 amount가 BTC가 아니라 '계약 수'이며,
-        # 계약 1개 = market['contractSize']만큼의 BTC다. 바이낸스처럼 contractSize가 1인
-        # 거래소는 그대로 BTC 수량이 사용된다.
+        # 계약 1개 = market['contractSize']만큼의 BTC다. 진입 수량은 quantize_qty에서 이미
+        # 계약 스텝에 맞게 보정되어 오므로, 여기서는 BTC→계약 변환만 하면 된다(부동소수점
+        # 오차로 계약수가 0으로 잘리지 않게 round로 스냅한다).
         market = self.exchange.market(self.symbol)
         contract_size = market.get("contractSize") or 1
-        qty_contracts_raw = qty / contract_size
-        qty_contracts = float(self.exchange.amount_to_precision(self.symbol, qty_contracts_raw))
+        try:
+            qty_contracts = float(self.exchange.amount_to_precision(self.symbol, round(qty / contract_size, 8)))
+        except Exception:
+            qty_contracts = 0.0
         logger.info(
-            "주문 수량 계산: BTC수량=%.8f / 계약크기=%s / 계약수(반올림전)=%.4f / 계약수(반올림후)=%.4f / 가격=%.2f",
-            qty, contract_size, qty_contracts_raw, qty_contracts, price,
+            "주문 실행: BTC수량=%.8f / 계약크기=%s / 계약수=%.4f / 방향=%s / %s / 가격=%.2f",
+            qty, contract_size, qty_contracts, side.value, "진입" if is_entry else "청산", price,
         )
         if qty_contracts <= 0:
             raise RuntimeError(
-                f"계산된 주문 수량이 거래소 최소 단위(1계약={contract_size} BTC) 미만이라 0으로 반올림되었습니다 "
-                f"(필요 BTC수량={qty:.8f}). 계좌 잔고가 너무 작거나 EXCHANGE_API 계정의 실제 USDT 잔고를 확인하세요."
+                f"주문 수량이 거래소 최소 단위(1계약={contract_size} BTC) 미만이라 0이 되었습니다 "
+                f"(BTC수량={qty:.8f}). 계좌에 실제 USDT 잔고가 있는지 확인하세요."
             )
         self._check_min_notional(qty_contracts, price)
         if side == Side.LONG:
@@ -297,12 +332,16 @@ class LiveBroker:
 
 
 def make_qty_provider(broker) -> Callable[[float], float]:
-    """1차 진입 수량 = (잔고 * 2% 마진) * 10배 레버리지 / 현재가."""
+    """1차 진입 수량 = (잔고 * 2% 마진) * 10배 레버리지 / 현재가.
+
+    계산된 BTC 수량은 broker.quantize_qty로 거래소 최소 주문 단위에 맞게 보정된다.
+    """
 
     def _provider(price: float) -> float:
         margin = broker.get_balance() * INITIAL_MARGIN_PCT
         notional = margin * LEVERAGE
-        return notional / price
+        qty_btc = notional / price
+        return broker.quantize_qty(qty_btc, price)
 
     return _provider
 
@@ -540,6 +579,10 @@ class HedgedMartingaleBot:
 
     def run_forever(self, market_data: PublicMarketData, poll_sec: int = POLL_SEC, stop_event: Optional[threading.Event] = None) -> None:
         logger.info("자동매매 시작 (%s, 레버리지 %sx, %s)", self.long.mode_label, LEVERAGE, TIMEFRAME)
+        try:
+            logger.info("현재 계좌 주문가능 잔고: %.4f USDT", self.broker.get_balance())
+        except Exception as e:
+            logger.warning("잔고 조회 실패: %s", e)
         while stop_event is None or not stop_event.is_set():
             try:
                 closes = market_data.get_closes()
