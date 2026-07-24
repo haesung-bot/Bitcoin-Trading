@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Match-3 Rogue-Lite</title>
+  <style>
+    :root { --bg: #0d1220; --panel: #1a2238; --accent: #ffd23f; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: #e8ecf7;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex; flex-direction: column; align-items: center;
+      min-height: 100vh; padding: 16px; gap: 14px;
+    }
+    h1 { font-size: 20px; margin: 8px 0 0; letter-spacing: 1px; }
+    .hud {
+      display: grid; grid-template-columns: repeat(4, auto); gap: 18px;
+      background: var(--panel); padding: 12px 20px; border-radius: 12px;
+      font-size: 15px; align-items: center;
+    }
+    .hud b { color: var(--accent); font-size: 18px; }
+    .stat { text-align: center; }
+    .stat small { display: block; opacity: .6; font-size: 11px; text-transform: uppercase; }
+    #game { border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.5); touch-action: none; }
+    #log { font-size: 12px; opacity: .8; min-height: 40px; width: 100%; max-width: 420px; }
+    #log div { padding: 2px 0; }
+    /* 퍽 선택 오버레이 */
+    #perk-overlay {
+      position: fixed; inset: 0; background: rgba(6,9,18,.85);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 20px; z-index: 10;
+    }
+    #perk-overlay.hidden { display: none; }
+    #perk-overlay h2 { color: var(--accent); }
+    #perk-choices { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+    .perk-card {
+      background: var(--panel); border: 2px solid #2c3a63; color: #e8ecf7;
+      border-radius: 14px; padding: 20px 18px; width: 160px; cursor: pointer;
+      display: flex; flex-direction: column; gap: 10px; transition: .15s;
+    }
+    .perk-card:hover { border-color: var(--accent); transform: translateY(-4px); }
+    .perk-card strong { font-size: 16px; color: var(--accent); }
+    .perk-card span { font-size: 13px; opacity: .85; }
+  </style>
+</head>
+<body>
+  <h1>MATCH-3 ROGUE·LITE</h1>
+
+  <div class="hud">
+    <div class="stat"><small>Stage</small><b id="stage">1</b></div>
+    <div class="stat"><small>Moves</small><b id="moves">25</b></div>
+    <div class="stat"><small>Score / Target</small><b><span id="score">0</span> / <span id="target">1000</span></b></div>
+    <div class="stat"><small>Hearts</small><b id="hearts">❤❤❤❤❤</b></div>
+  </div>
+
+  <canvas id="game"></canvas>
+  <div id="log"></div>
+
+  <div id="perk-overlay" class="hidden">
+    <h2>⚡ 퍽 선택 — 하나를 고르세요</h2>
+    <div id="perk-choices"></div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
