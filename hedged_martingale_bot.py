@@ -195,6 +195,7 @@ class LiveBroker:
             "options": {"defaultType": _EXCHANGE_DEFAULT_TYPE.get(exchange_id, "swap")},
         })
         self.symbol = symbol
+        self.exchange.load_markets()  # market()/set_position_mode()가 미리 로드된 마켓 정보를 필요로 함
         self._setup_account(leverage)
 
     def _setup_account(self, leverage: int) -> None:
@@ -211,16 +212,30 @@ class LiveBroker:
         bal = self.exchange.fetch_balance()
         return float(bal.get("USDT", {}).get("free", 0.0))
 
-    def _check_min_notional(self, qty: float, price: float) -> None:
+    def _to_contract_amount(self, qty_base: float) -> float:
+        """BTC 수량을 거래소 주문 단위로 변환한다.
+
+        Gate.io 등 계약(contract) 기반 거래소는 주문 amount가 BTC가 아니라 '계약 수'이며,
+        계약 1개 = market['contractSize']만큼의 BTC다(예: 0.0001 BTC/계약). 이를 무시하고
+        BTC 수량을 그대로 넘기면 최소 수량(1계약) 미만으로 반올림되어 주문이 거부된다.
+        바이낸스처럼 contractSize가 1인 거래소는 그대로 BTC 수량이 사용된다.
+        """
+        market = self.exchange.market(self.symbol)
+        contract_size = market.get("contractSize") or 1
+        return qty_base / contract_size
+
+    def _check_min_notional(self, qty_contracts: float, price: float) -> None:
         try:
             market = self.exchange.market(self.symbol)
+            contract_size = market.get("contractSize") or 1
             limits = market.get("limits", {}) or {}
             min_amount = (limits.get("amount") or {}).get("min")
             min_cost = (limits.get("cost") or {}).get("min")
-            if min_amount and qty < min_amount:
-                logger.warning("주문 수량 %.8f이 거래소 최소 수량 %.8f보다 작습니다. 주문이 거부될 수 있습니다.", qty, min_amount)
-            if min_cost and qty * price < min_cost:
-                logger.warning("주문 금액 %.2f이 거래소 최소 주문금액 %.2f보다 작습니다. 주문이 거부될 수 있습니다.", qty * price, min_cost)
+            if min_amount and qty_contracts < min_amount:
+                logger.warning("주문 수량 %.8f계약이 거래소 최소 수량 %.8f계약보다 작습니다. 주문이 거부될 수 있습니다.", qty_contracts, min_amount)
+            notional = qty_contracts * contract_size * price
+            if min_cost and notional < min_cost:
+                logger.warning("주문 금액 %.2f이 거래소 최소 주문금액 %.2f보다 작습니다. 주문이 거부될 수 있습니다.", notional, min_cost)
         except Exception as e:
             logger.debug("최소 주문 조건 확인 실패(무시): %s", e)
 
@@ -234,14 +249,15 @@ class LiveBroker:
         return {} if is_entry else {"reduceOnly": True}
 
     def fill_order(self, side: Side, is_entry: bool, qty: float, price: float) -> None:
-        qty = float(self.exchange.amount_to_precision(self.symbol, qty))
-        self._check_min_notional(qty, price)
+        qty_contracts = self._to_contract_amount(qty)
+        qty_contracts = float(self.exchange.amount_to_precision(self.symbol, qty_contracts))
+        self._check_min_notional(qty_contracts, price)
         if side == Side.LONG:
             order_side = "buy" if is_entry else "sell"
         else:
             order_side = "sell" if is_entry else "buy"
         params = self._order_params(side, is_entry)
-        self.exchange.create_order(self.symbol, "market", order_side, qty, None, params)
+        self.exchange.create_order(self.symbol, "market", order_side, qty_contracts, None, params)
 
     def apply_pnl(self, pnl: float) -> None:
         pass  # 실거래 잔고는 거래소가 직접 반영하므로 별도 처리 불필요
