@@ -204,6 +204,13 @@ class HedgedMartingaleGUI:
         self.root.after(0, lambda: self.status_var.set("상태: 매매 중 (실거래)"))
         self._log("자동매매를 시작합니다 (실거래 모드).")
 
+        # 텔레그램이 실제로 연결되는지 시작 시점에 바로 확인(첫 매매까지 기다리지 않도록)
+        if core.TELEGRAM_BOT_TOKEN and core.TELEGRAM_CHAT_ID:
+            self._log("텔레그램 연결 테스트 메시지를 보냅니다...")
+            notifier.send("[LIVE] 자동매매가 시작되었습니다. 이 메시지가 보이면 텔레그램 알림이 정상 연결된 것입니다.")
+        else:
+            self._log("텔레그램 토큰/Chat ID가 비어 있어 알림 없이 진행합니다(로그에는 계속 표시됨).")
+
         bot.run_forever(market_data, poll_sec=core.POLL_SEC, stop_event=self.stop_event)
 
         self._log("자동매매가 정지되었습니다.")

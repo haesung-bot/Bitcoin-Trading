@@ -133,12 +133,20 @@ class TelegramNotifier:
     def send(self, text: str) -> None:
         logger.info("[알림] %s", text.replace("\n", " | "))
         if not self.token or not self.chat_id:
-            return  # 토큰/채팅ID 미설정 시 콘솔 로그로만 대체
+            logger.warning("텔레그램 토큰 또는 Chat ID가 비어 있어 메시지를 보내지 않습니다. GUI에 두 값을 입력했는지 확인하세요.")
+            return
         try:
             url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-            requests.post(url, data={"chat_id": self.chat_id, "text": text}, timeout=5)
+            resp = requests.post(url, data={"chat_id": self.chat_id, "text": text}, timeout=10)
+            body = resp.json()
+            if not body.get("ok"):
+                # 텔레그램이 왜 거부했는지(예: chat not found, 봇에게 먼저 /start 안 함)를 그대로 보여준다.
+                logger.warning(
+                    "텔레그램 전송 실패 (code=%s): %s | Chat ID나 토큰이 맞는지, 봇에게 먼저 /start를 보냈는지 확인하세요.",
+                    body.get("error_code"), body.get("description"),
+                )
         except Exception as e:
-            logger.warning("텔레그램 전송 실패: %s", e)
+            logger.warning("텔레그램 전송 오류(네트워크/방화벽 확인): %s", e)
 
 
 # ───────────── 시세 데이터 (공개 API, 인증 불필요) ─────────────
