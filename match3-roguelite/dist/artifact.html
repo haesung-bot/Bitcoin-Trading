@@ -1,0 +1,1692 @@
+<style>
+    :root { --bg: #0d1220; --panel: #1a2238; --accent: #ffd23f; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: #e8ecf7;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex; flex-direction: column; align-items: center;
+      min-height: 100vh; padding: 16px; gap: 14px;
+    }
+    h1 { font-size: 20px; margin: 8px 0 0; letter-spacing: 1px; }
+    .hud {
+      display: grid; grid-template-columns: repeat(4, auto); gap: 18px;
+      background: var(--panel); padding: 12px 20px; border-radius: 12px;
+      font-size: 15px; align-items: center;
+    }
+    .hud b { color: var(--accent); font-size: 18px; }
+    .stat { text-align: center; }
+    .stat small { display: block; opacity: .6; font-size: 11px; text-transform: uppercase; }
+    #game { border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.5); touch-action: none; }
+    #log { font-size: 12px; opacity: .8; min-height: 40px; width: 100%; max-width: 420px; }
+    #log div { padding: 2px 0; }
+    /* 퍽 선택 오버레이 */
+    #perk-overlay {
+      position: fixed; inset: 0; background: rgba(6,9,18,.85);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 20px; z-index: 10;
+    }
+    #perk-overlay.hidden { display: none; }
+    #perk-overlay h2 { color: var(--accent); }
+    #perk-choices { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+    .perk-card {
+      background: var(--panel); border: 2px solid #2c3a63; color: #e8ecf7;
+      border-radius: 14px; padding: 20px 18px; width: 160px; cursor: pointer;
+      display: flex; flex-direction: column; gap: 10px; transition: .15s;
+    }
+    .perk-card:hover { border-color: var(--accent); transform: translateY(-4px); }
+    .perk-card strong { font-size: 16px; color: var(--accent); }
+    .perk-card span { font-size: 13px; opacity: .85; }
+  </style>
+<h1>MATCH-3 ROGUE·LITE</h1>
+
+  <div class="hud">
+    <div class="stat"><small>Stage</small><b id="stage">1</b></div>
+    <div class="stat"><small>Moves</small><b id="moves">25</b></div>
+    <div class="stat"><small>Score / Target</small><b><span id="score">0</span> / <span id="target">1000</span></b></div>
+    <div class="stat"><small>Hearts</small><b id="hearts">❤❤❤❤❤</b></div>
+  </div>
+
+  <canvas id="game"></canvas>
+  <div id="log"></div>
+
+  <div id="perk-overlay" class="hidden">
+    <h2>⚡ 퍽 선택 — 하나를 고르세요</h2>
+    <div id="perk-choices"></div>
+  </div>
+
+  <script>
+// ===== src/core/Constants.js =====
+// =============================================================
+//  Constants.js  -  전역 상수 / 설정 정의
+//  (게임 밸런스 값은 전부 여기서 관리 -> 기획 변경 시 이 파일만 수정)
+// =============================================================
+
+/** 보드 크기 (가로 x 세로 칸 수) */
+const BOARD_COLS = 8;
+const BOARD_ROWS = 8;
+
+/** 타일 한 칸의 픽셀 크기 & 여백 */
+const TILE_SIZE = 72;
+const BOARD_PADDING = 24;
+
+/**
+ * 보드 상태머신(State Machine)의 상태 정의.
+ * 매 프레임 현재 상태에 따라 다른 로직이 실행된다.
+ */
+const GameState = Object.freeze({
+  IDLE: 'IDLE',                 // 입력 대기 (플레이어가 타일을 고르는 중)
+  SWAP: 'SWAP',                 // 두 타일 교환 애니메이션 재생 중
+  MATCH_CHECK: 'MATCH_CHECK',   // 매치 성립 여부 판정
+  DESTROY: 'DESTROY',           // 매치된 타일 파괴 애니메이션
+  GRAVITY_FALL: 'GRAVITY_FALL', // 빈 칸으로 위 타일이 낙하
+  REFILL: 'REFILL',             // 상단에서 새 타일 생성/투입
+  CHECK_GAME_OVER: 'CHECK_GAME_OVER', // 스테이지 클리어 / 이동 소진 판정
+});
+
+/**
+ * 일반 타일 색상 종류. (숫자 인덱스로 관리 -> 스프라이트 매핑에 유리)
+ * 값은 렌더러에서 색으로 그린다.
+ */
+const TileColor = Object.freeze({
+  RED: 0,
+  BLUE: 1,
+  GREEN: 2,
+  YELLOW: 3,
+  PURPLE: 4,
+  ORANGE: 5,
+});
+
+/** 실제로 스폰에 쓸 색 목록 (개수 조절로 난이도 튜닝) */
+const ACTIVE_COLORS = [
+  TileColor.RED,
+  TileColor.BLUE,
+  TileColor.GREEN,
+  TileColor.YELLOW,
+  TileColor.PURPLE,
+  TileColor.ORANGE,
+];
+
+/** 렌더링용 색상 팔레트 (TileColor 인덱스 -> hex) */
+const COLOR_HEX = {
+  [TileColor.RED]: '#ff5a5f',
+  [TileColor.BLUE]: '#3d9bff',
+  [TileColor.GREEN]: '#42d97a',
+  [TileColor.YELLOW]: '#ffd23f',
+  [TileColor.PURPLE]: '#b06bff',
+  [TileColor.ORANGE]: '#ff9636',
+};
+
+/**
+ * 특수타일(부스터) 종류.
+ *  - NONE      : 일반 타일
+ *  - ROCKET    : 4개 일자매치 -> 가로 또는 세로 한 줄 전체 제거
+ *  - PROPELLER : 4개 2x2 매치 -> 주변 제거 후 목표물로 유도
+ *  - BOMB      : 5개 L/T 매치 -> 3x3 폭발
+ *  - LIGHT_BALL: 5개 일자매치 -> 같은 색 전부 제거
+ */
+const SpecialType = Object.freeze({
+  NONE: 'NONE',
+  ROCKET: 'ROCKET',
+  PROPELLER: 'PROPELLER',
+  BOMB: 'BOMB',
+  LIGHT_BALL: 'LIGHT_BALL',
+});
+
+/** 로켓 방향 (일자매치가 가로였는지 세로였는지에 따라 결정) */
+const RocketDir = Object.freeze({
+  HORIZONTAL: 'H', // 가로 한 줄 제거
+  VERTICAL: 'V',   // 세로 한 줄 제거
+});
+
+/** 애니메이션 지속 시간 (초) */
+const TIMING = Object.freeze({
+  SWAP: 0.18,
+  SWAP_BACK: 0.18,   // 매치 실패 시 되돌리기
+  DESTROY: 0.22,
+  FALL_PER_TILE: 0.06, // 한 칸 낙하당 시간
+  REFILL: 0.20,
+});
+
+/** 스테이지 기본 설정 */
+const STAGE_DEFAULTS = Object.freeze({
+  BASE_MOVES: 25,           // 기본 이동 횟수
+  PERK_EVERY: 3,            // 몇 스테이지마다 퍽 선택을 띄울지
+  REWARD_AD_MOVES: 5,       // 광고 보상 이동 횟수
+  MAX_HEARTS: 5,            // 최대 하트(라이프)
+});
+
+/** 점수 규칙 */
+const SCORE = Object.freeze({
+  PER_TILE: 10,
+  CASCADE_BONUS: 5, // 연쇄 단계마다 타일당 추가 점수
+});
+
+
+// ===== src/core/Tile.js =====
+// =============================================================
+//  Tile.js  -  개별 타일의 데이터 + 애니메이션 상태
+// =============================================================
+
+let _tileIdSeq = 1; // 타일 고유 ID 시퀀스 (애니메이션 추적용)
+
+/**
+ * 보드 위 한 칸을 차지하는 타일.
+ * 논리 좌표(row,col)와 별개로, 화면상 픽셀 좌표(px,py)를 따로 가진다.
+ * -> 스왑/낙하 애니메이션은 픽셀 좌표를 목표점(targetPx/targetPy)으로
+ *    부드럽게 보간(lerp)하는 방식으로 처리한다.
+ */
+class Tile {
+  /**
+   * @param {number} color   TileColor 인덱스
+   * @param {number} row      논리 행
+   * @param {number} col      논리 열
+   */
+  constructor(color, row, col) {
+    this.id = _tileIdSeq++;
+    this.color = color;
+    this.special = SpecialType.NONE;
+    this.rocketDir = null; // 로켓일 때만 사용 (RocketDir)
+
+    this.row = row;
+    this.col = col;
+
+    // 화면상 현재 위치 & 목표 위치 (픽셀)
+    this.px = Tile.colToX(col);
+    this.py = Tile.rowToY(row);
+    this.targetPx = this.px;
+    this.targetPy = this.py;
+
+    // 애니메이션 진행값
+    this.moving = false;
+    this.moveElapsed = 0;
+    this.moveDuration = 0;
+    this.fromPx = this.px;
+    this.fromPy = this.py;
+
+    // 파괴 연출용
+    this.dying = false;
+    this.deathElapsed = 0;
+    this.scale = 1;      // 등장/소멸 스케일 연출
+    this.spawning = false;
+  }
+
+  /** 논리 열 -> 화면 X 픽셀 (좌상단 기준) */
+  static colToX(col) {
+    return BOARD_PADDING + col * TILE_SIZE;
+  }
+  /** 논리 행 -> 화면 Y 픽셀 */
+  static rowToY(row) {
+    return BOARD_PADDING + row * TILE_SIZE;
+  }
+
+  get isSpecial() {
+    return this.special !== SpecialType.NONE;
+  }
+
+  /**
+   * 목표 위치로의 이동 애니메이션 시작.
+   * @param {number} row 목표 행
+   * @param {number} col 목표 열
+   * @param {number} duration 소요 시간(초)
+   */
+  moveTo(row, col, duration) {
+    this.row = row;
+    this.col = col;
+    this.fromPx = this.px;
+    this.fromPy = this.py;
+    this.targetPx = Tile.colToX(col);
+    this.targetPy = Tile.rowToY(row);
+    this.moveElapsed = 0;
+    this.moveDuration = Math.max(0.0001, duration);
+    this.moving = true;
+  }
+
+  /** 화면 위치만 즉시 목표점으로 스냅 (애니메이션 없음) */
+  snapToLogical() {
+    this.px = this.targetPx = Tile.colToX(this.col);
+    this.py = this.targetPy = Tile.rowToY(this.row);
+    this.moving = false;
+  }
+
+  /**
+   * 프레임 갱신. 이동/소멸 애니메이션을 진행한다.
+   * @param {number} dt 델타타임(초)
+   * @returns {boolean} 아직 애니메이션 중이면 true
+   */
+  update(dt) {
+    let busy = false;
+
+    if (this.moving) {
+      this.moveElapsed += dt;
+      const t = Math.min(1, this.moveElapsed / this.moveDuration);
+      const e = easeOutQuad(t); // 감속 이징으로 자연스럽게
+      this.px = lerp(this.fromPx, this.targetPx, e);
+      this.py = lerp(this.fromPy, this.targetPy, e);
+      if (t >= 1) {
+        this.moving = false;
+        this.px = this.targetPx;
+        this.py = this.targetPy;
+      } else {
+        busy = true;
+      }
+    }
+
+    if (this.spawning) {
+      this.moveElapsed += 0; // 스폰 스케일은 death와 별도 타이머 없이 간단 처리
+      this.scale = Math.min(1, this.scale + dt * 6);
+      if (this.scale >= 1) this.spawning = false;
+      else busy = true;
+    }
+
+    if (this.dying) {
+      this.deathElapsed += dt;
+      this.scale = Math.max(0, 1 - this.deathElapsed / 0.22);
+      if (this.scale <= 0) this.scale = 0;
+      else busy = true;
+    }
+
+    return busy;
+  }
+}
+
+// ---- 보간 유틸 ----
+function lerp(a, b, t) { return a + (b - a) * t; }
+function easeOutQuad(t) { return 1 - (1 - t) * (1 - t); }
+
+
+// ===== src/core/MatchDetector.js =====
+// =============================================================
+//  MatchDetector.js  -  매치 판정 & 특수타일 분류
+//  스펙 #2 담당:
+//    - Match-3            : 기본 파괴
+//    - Match-4 (일자)     : ROCKET  (가로/세로 한 줄 제거)
+//    - Match-4 (2x2 박스) : PROPELLER (주변 제거 후 목표 유도)
+//    - Match-5 (L/T)      : BOMB (3x3 폭발)
+//    - Match-5 (일자)     : LIGHT_BALL (같은 색 전부 제거)
+// =============================================================
+
+/**
+ * @typedef {Object} MatchResult
+ * @property {Set<string>} cells          제거 대상 셀 좌표 집합 ("r,c")
+ * @property {SpawnSpec[]} spawns         제거 후 생성할 특수타일 목록
+ * @property {number}      groupCount     매치 그룹 개수 (연쇄/점수 계산용)
+ */
+
+/**
+ * @typedef {Object} SpawnSpec
+ * @property {number} row
+ * @property {number} col
+ * @property {string} type       SpecialType
+ * @property {number} color      스폰될 타일 색
+ * @property {string|null} rocketDir
+ */
+
+class MatchDetector {
+  /**
+   * 보드 전체에서 매치를 찾는다.
+   * @param {import('./Board.js').Board} board
+   * @param {{row:number,col:number}|null} swapHint 스왑으로 유발된 위치(특수타일 스폰 위치 우선권)
+   * @returns {MatchResult}
+   */
+  static findMatches(board, swapHint = null) {
+    const grid = board.grid;
+    const runs = []; // 길이 3 이상인 일자 매치 목록
+
+    // ---- 1) 가로 런 탐색 ----
+    for (let r = 0; r < BOARD_ROWS; r++) {
+      let c = 0;
+      while (c < BOARD_COLS) {
+        const t = grid[r][c];
+        if (!t) { c++; continue; }
+        let end = c;
+        while (end + 1 < BOARD_COLS && grid[r][end + 1] && grid[r][end + 1].color === t.color) {
+          end++;
+        }
+        const len = end - c + 1;
+        if (len >= 3) {
+          runs.push(makeRun('H', r, c, len, t.color));
+        }
+        c = end + 1;
+      }
+    }
+
+    // ---- 2) 세로 런 탐색 ----
+    for (let c = 0; c < BOARD_COLS; c++) {
+      let r = 0;
+      while (r < BOARD_ROWS) {
+        const t = grid[r][c];
+        if (!t) { r++; continue; }
+        let end = r;
+        while (end + 1 < BOARD_ROWS && grid[end + 1][c] && grid[end + 1][c].color === t.color) {
+          end++;
+        }
+        const len = end - r + 1;
+        if (len >= 3) {
+          runs.push(makeRun('V', c, r, len, t.color));
+        }
+        r = end + 1;
+      }
+    }
+
+    const cells = new Set();
+    const spawns = [];
+
+    // ---- 3) 런들을 교차/색상 기준으로 그룹핑 (Union-Find) ----
+    // 겹치는 셀을 공유하는 런들은 하나의 매치 그룹.
+    const groups = MatchDetector._groupRuns(runs);
+
+    for (const group of groups) {
+      const groupCells = new Set();
+      let maxLen = 0;
+      let hasH = false, hasV = false;
+      let longestRun = null;
+      const color = group[0].color;
+
+      for (const run of group) {
+        for (const [rr, cc] of runCells(run)) groupCells.add(`${rr},${cc}`);
+        if (run.len > maxLen) { maxLen = run.len; longestRun = run; }
+        if (run.dir === 'H') hasH = true; else hasV = true;
+      }
+
+      // 그룹 셀 전부 제거 대상에 추가
+      for (const key of groupCells) cells.add(key);
+
+      // ---- 특수타일 분류 ----
+      let type = SpecialType.NONE;
+      let rocketDir = null;
+
+      if (hasH && hasV) {
+        // 가로+세로가 교차 => L/T 형태 (총 5칸 이상) => 폭탄
+        type = SpecialType.BOMB;
+      } else if (maxLen >= 5) {
+        // 일자 5줄 => 라이트볼
+        type = SpecialType.LIGHT_BALL;
+      } else if (maxLen === 4) {
+        // 일자 4줄 => 로켓 (런 방향으로 발사)
+        type = SpecialType.ROCKET;
+        rocketDir = longestRun.dir === 'H' ? RocketDir.HORIZONTAL : RocketDir.VERTICAL;
+      }
+      // maxLen === 3 이면 특수타일 없음 (기본 파괴)
+
+      if (type !== SpecialType.NONE) {
+        const pos = MatchDetector._pickSpawnPos(group, groupCells, swapHint);
+        spawns.push({ row: pos.row, col: pos.col, type, color, rocketDir });
+      }
+    }
+
+    // ---- 4) 2x2 박스 매치 => 프로펠러 (일자 런으로는 안 잡히므로 별도 탐색) ----
+    MatchDetector._detectSquares(board, cells, spawns, swapHint);
+
+    return { cells, spawns, groupCount: groups.length + spawns.filter(s => s.type === SpecialType.PROPELLER).length };
+  }
+
+  /**
+   * 스왑 없이 보드에 이미 매치가 존재하는지 (초기 보드 검증용 빠른 체크)
+   * @returns {boolean}
+   */
+  static hasAnyMatch(board) {
+    const grid = board.grid;
+    for (let r = 0; r < BOARD_ROWS; r++) {
+      for (let c = 0; c < BOARD_COLS; c++) {
+        const t = grid[r][c];
+        if (!t) continue;
+        // 가로 3
+        if (c + 2 < BOARD_COLS &&
+            grid[r][c + 1]?.color === t.color &&
+            grid[r][c + 2]?.color === t.color) return true;
+        // 세로 3
+        if (r + 2 < BOARD_ROWS &&
+            grid[r + 1][c]?.color === t.color &&
+            grid[r + 2][c]?.color === t.color) return true;
+      }
+    }
+    return false;
+  }
+
+  // ---------- 내부 헬퍼 ----------
+
+  /** 겹치는 셀을 공유하는 런들을 그룹으로 묶는다 */
+  static _groupRuns(runs) {
+    const n = runs.length;
+    const parent = Array.from({ length: n }, (_, i) => i);
+    const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    const union = (a, b) => { parent[find(a)] = find(b); };
+
+    // 셀 -> 그 셀을 포함하는 런 인덱스들
+    const cellMap = new Map();
+    runs.forEach((run, idx) => {
+      for (const [r, c] of runCells(run)) {
+        const key = `${r},${c}`;
+        if (cellMap.has(key)) union(idx, cellMap.get(key));
+        else cellMap.set(key, idx);
+      }
+    });
+
+    const buckets = new Map();
+    runs.forEach((run, idx) => {
+      const root = find(idx);
+      if (!buckets.has(root)) buckets.set(root, []);
+      buckets.get(root).push(run);
+    });
+    return [...buckets.values()];
+  }
+
+  /** 특수타일 스폰 위치 결정: 스왑한 칸 우선, 없으면 교차점/중앙 */
+  static _pickSpawnPos(group, groupCells, swapHint) {
+    if (swapHint && groupCells.has(`${swapHint.row},${swapHint.col}`)) {
+      return { row: swapHint.row, col: swapHint.col };
+    }
+    // 가로/세로 교차점 찾기 (L/T)
+    const hCells = new Set();
+    const vCells = new Set();
+    for (const run of group) {
+      const set = run.dir === 'H' ? hCells : vCells;
+      for (const [r, c] of runCells(run)) set.add(`${r},${c}`);
+    }
+    for (const key of hCells) if (vCells.has(key)) {
+      const [r, c] = key.split(',').map(Number);
+      return { row: r, col: c };
+    }
+    // 가장 긴 런의 중앙
+    let longest = group[0];
+    for (const run of group) if (run.len > longest.len) longest = run;
+    const cellsArr = runCells(longest);
+    const mid = cellsArr[Math.floor(cellsArr.length / 2)];
+    return { row: mid[0], col: mid[1] };
+  }
+
+  /** 2x2 동일 색 블록 탐색 -> 프로펠러 */
+  static _detectSquares(board, cells, spawns, swapHint) {
+    const grid = board.grid;
+    for (let r = 0; r < BOARD_ROWS - 1; r++) {
+      for (let c = 0; c < BOARD_COLS - 1; c++) {
+        const a = grid[r][c], b = grid[r][c + 1], d = grid[r + 1][c], e = grid[r + 1][c + 1];
+        if (!a || !b || !d || !e) continue;
+        if (a.color === b.color && a.color === d.color && a.color === e.color) {
+          const sq = [[r, c], [r, c + 1], [r + 1, c], [r + 1, c + 1]];
+          // 이미 더 큰 특수타일(로켓/폭탄/라이트볼)이 이 칸을 점유했으면 프로펠러는 스킵
+          const overlapsBiggerSpawn = spawns.some(s =>
+            s.type !== SpecialType.PROPELLER &&
+            sq.some(([sr, sc]) => sr === s.row && sc === s.col));
+          if (overlapsBiggerSpawn) continue;
+
+          for (const [sr, sc] of sq) cells.add(`${sr},${sc}`);
+          const pos = swapHint && sq.some(([sr, sc]) => sr === swapHint.row && sc === swapHint.col)
+            ? { row: swapHint.row, col: swapHint.col }
+            : { row: r, col: c };
+          spawns.push({ row: pos.row, col: pos.col, type: SpecialType.PROPELLER, color: a.color, rocketDir: null });
+        }
+      }
+    }
+  }
+}
+
+// ---- 런(run) 표현 ----
+// dir: 'H'|'V', line: 가로면 row / 세로면 col, start: 시작 인덱스, len, color
+function makeRun(dir, line, start, len, color) {
+  return { dir, line, start, len, color };
+}
+/** 런이 차지하는 셀 좌표 배열 [[r,c],...] */
+function runCells(run) {
+  const out = [];
+  for (let i = 0; i < run.len; i++) {
+    if (run.dir === 'H') out.push([run.line, run.start + i]);
+    else out.push([run.start + i, run.line]);
+  }
+  return out;
+}
+
+
+// ===== src/core/StateMachine.js =====
+// =============================================================
+//  StateMachine.js  -  범용 유한 상태머신(FSM)
+//  각 상태는 { enter?, update?, exit? } 핸들러를 가진다.
+//  update(dt)가 다음 상태 이름을 반환하면 전이(transition)한다.
+// =============================================================
+
+class StateMachine {
+  /**
+   * @param {string} initial 시작 상태 이름
+   * @param {Object<string, {enter?:Function, update?:Function, exit?:Function}>} states
+   * @param {{onChange?:(from:string,to:string)=>void}} [opts]
+   */
+  constructor(initial, states, opts = {}) {
+    this.states = states;
+    this.current = initial;
+    this.onChange = opts.onChange || null;
+    this.timeInState = 0;
+    const s = this.states[initial];
+    if (s && s.enter) s.enter();
+  }
+
+  /** 명시적 상태 전이 */
+  change(to, payload) {
+    if (to === this.current) return;
+    const from = this.current;
+    const prev = this.states[from];
+    if (prev && prev.exit) prev.exit(to);
+
+    this.current = to;
+    this.timeInState = 0;
+    const next = this.states[to];
+    if (next && next.enter) next.enter(payload, from);
+    if (this.onChange) this.onChange(from, to);
+  }
+
+  /**
+   * 매 프레임 호출. 현재 상태의 update가 상태 이름 문자열을 반환하면 전이한다.
+   * @param {number} dt
+   */
+  update(dt) {
+    this.timeInState += dt;
+    const s = this.states[this.current];
+    if (s && s.update) {
+      const next = s.update(dt, this.timeInState);
+      if (next && next !== this.current) this.change(next);
+    }
+  }
+
+  is(name) { return this.current === name; }
+}
+
+
+// ===== src/core/Board.js =====
+// =============================================================
+//  Board.js  -  8x8 보드 매트릭스 + 타일 조작(스왑/중력/리필/발동)
+// =============================================================
+
+
+
+class Board {
+  constructor() {
+    /** @type {(Tile|null)[][]} grid[row][col] */
+    this.grid = [];
+    this.reset();
+  }
+
+  /** 초기 매치가 없는 보드를 새로 생성 */
+  reset() {
+    do {
+      this.grid = [];
+      for (let r = 0; r < BOARD_ROWS; r++) {
+        const row = [];
+        for (let c = 0; c < BOARD_COLS; c++) {
+          row.push(new Tile(this._randColor(), r, c));
+        }
+        this.grid.push(row);
+      }
+    } while (MatchDetector.hasAnyMatch(this)); // 시작부터 매치가 있으면 재생성
+  }
+
+  _randColor() {
+    return ACTIVE_COLORS[(Math.random() * ACTIVE_COLORS.length) | 0];
+  }
+
+  inBounds(r, c) {
+    return r >= 0 && r < BOARD_ROWS && c >= 0 && c < BOARD_COLS;
+  }
+  get(r, c) {
+    return this.inBounds(r, c) ? this.grid[r][c] : null;
+  }
+
+  /** 두 칸이 상하좌우로 인접한가 */
+  areAdjacent(a, b) {
+    const dr = Math.abs(a.row - b.row);
+    const dc = Math.abs(a.col - b.col);
+    return dr + dc === 1;
+  }
+
+  /**
+   * 논리상 두 타일 교환 (데이터만; 애니메이션은 GameEngine이 지시).
+   * @param {Tile} a @param {Tile} b
+   */
+  swapLogical(a, b) {
+    const ar = a.row, ac = a.col, br = b.row, bc = b.col;
+    this.grid[ar][ac] = b;
+    this.grid[br][bc] = a;
+    a.row = br; a.col = bc;
+    b.row = ar; b.col = ac;
+  }
+
+  /**
+   * 매치된 셀들을 제거하고, 그 자리에 특수타일을 스폰한다.
+   * @param {Set<string>} cells 제거 대상
+   * @param {import('./MatchDetector.js').SpawnSpec[]} spawns
+   * @returns {Tile[]} 제거된 타일 목록 (연출/점수용)
+   */
+  destroyCells(cells, spawns = []) {
+    const spawnKeys = new Map(); // "r,c" -> spawnSpec (그 자리는 파괴 대신 특수타일로 대체)
+    for (const s of spawns) spawnKeys.set(`${s.row},${s.col}`, s);
+
+    const removed = [];
+    for (const key of cells) {
+      const [r, c] = key.split(',').map(Number);
+      const t = this.grid[r][c];
+      if (!t) continue;
+
+      if (spawnKeys.has(key)) {
+        // 이 자리에 특수타일 생성 -> 기존 타일은 색만 유지한 채 특수화
+        const spec = spawnKeys.get(key);
+        t.special = spec.type;
+        t.rocketDir = spec.rocketDir || null;
+        t.spawning = true;
+        t.scale = 0.2;
+        // 특수타일은 살아남으므로 removed 에 넣지 않음
+      } else {
+        t.dying = true;
+        this.grid[r][c] = null;
+        removed.push(t);
+      }
+    }
+    return removed;
+  }
+
+  /**
+   * 특수타일 발동. 발동 시 영향을 받는 셀 좌표 집합을 반환한다.
+   * (연쇄 발동 지원: 영향 범위 안의 다른 특수타일도 함께 터지도록 GameEngine에서 재귀 처리)
+   * @param {Tile} tile 발동시킬 특수타일
+   * @param {{missionRow?:number,missionCol?:number}} ctx 프로펠러 유도 목표 등
+   * @returns {Set<string>} 제거될 셀 좌표
+   */
+  activateSpecial(tile, ctx = {}) {
+    const affected = new Set();
+    const r = tile.row, c = tile.col;
+
+    switch (tile.special) {
+      case SpecialType.ROCKET: {
+        if (tile.rocketDir === RocketDir.HORIZONTAL) {
+          for (let cc = 0; cc < BOARD_COLS; cc++) affected.add(`${r},${cc}`);
+        } else {
+          for (let rr = 0; rr < BOARD_ROWS; rr++) affected.add(`${rr},${c}`);
+        }
+        break;
+      }
+      case SpecialType.BOMB: {
+        // 3x3 반경
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            const rr = r + dr, cc = c + dc;
+            if (this.inBounds(rr, cc)) affected.add(`${rr},${cc}`);
+          }
+        }
+        break;
+      }
+      case SpecialType.LIGHT_BALL: {
+        // 같은 색 타일 전부 제거
+        for (let rr = 0; rr < BOARD_ROWS; rr++)
+          for (let cc = 0; cc < BOARD_COLS; cc++)
+            if (this.grid[rr][cc] && this.grid[rr][cc].color === tile.color)
+              affected.add(`${rr},${cc}`);
+        affected.add(`${r},${c}`);
+        break;
+      }
+      case SpecialType.PROPELLER: {
+        // 주변(상하좌우) 제거 + 미션 목표(없으면 랜덤 타일)로 유도
+        affected.add(`${r},${c}`);
+        for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+          const rr = r + dr, cc = c + dc;
+          if (this.inBounds(rr, cc)) affected.add(`${rr},${cc}`);
+        }
+        const target = this._propellerTarget(ctx);
+        if (target) affected.add(`${target.row},${target.col}`);
+        break;
+      }
+      default:
+        affected.add(`${r},${c}`);
+    }
+    return affected;
+  }
+
+  /** 프로펠러가 유도할 목표: 미션 좌표가 있으면 그곳, 없으면 임의 타일 */
+  _propellerTarget(ctx) {
+    if (ctx.missionRow != null && ctx.missionCol != null) {
+      return { row: ctx.missionRow, col: ctx.missionCol };
+    }
+    const candidates = [];
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++)
+        if (this.grid[r][c]) candidates.push({ row: r, col: c });
+    if (!candidates.length) return null;
+    return candidates[(Math.random() * candidates.length) | 0];
+  }
+
+  /**
+   * 중력 적용: 각 열에서 빈 칸(null) 아래로 타일을 떨어뜨린다.
+   * @returns {boolean} 하나라도 이동했으면 true
+   */
+  applyGravity() {
+    let moved = false;
+    for (let c = 0; c < BOARD_COLS; c++) {
+      let writeRow = BOARD_ROWS - 1; // 아래에서부터 채운다
+      for (let r = BOARD_ROWS - 1; r >= 0; r--) {
+        const t = this.grid[r][c];
+        if (t) {
+          if (writeRow !== r) {
+            this.grid[writeRow][c] = t;
+            this.grid[r][c] = null;
+            const fallDist = writeRow - r;
+            t.moveTo(writeRow, c, TIMING.FALL_PER_TILE * fallDist);
+            moved = true;
+          }
+          writeRow--;
+        }
+      }
+    }
+    return moved;
+  }
+
+  /**
+   * 리필: 각 열의 빈 칸을 상단에서 새 타일로 채운다.
+   * 새 타일은 화면 위쪽에서 떨어지도록 시작 위치를 보드 밖으로 잡는다.
+   * @returns {Tile[]} 새로 생성된 타일들
+   */
+  refill() {
+    const created = [];
+    for (let c = 0; c < BOARD_COLS; c++) {
+      // 해당 열의 빈 칸 수 계산
+      let empties = 0;
+      for (let r = 0; r < BOARD_ROWS; r++) if (!this.grid[r][c]) empties++;
+
+      let spawnIndex = 0;
+      for (let r = 0; r < BOARD_ROWS; r++) {
+        if (this.grid[r][c]) continue;
+        const t = new Tile(this._randColor(), r, c);
+        // 보드 위쪽(음수 행)에서 시작 -> 목표 행으로 낙하
+        const startRow = -(empties - spawnIndex);
+        t.px = Tile.colToX(c);
+        t.py = Tile.rowToY(startRow);
+        t.moveTo(r, c, TIMING.FALL_PER_TILE * (r - startRow));
+        this.grid[r][c] = t;
+        created.push(t);
+        spawnIndex++;
+      }
+    }
+    return created;
+  }
+
+  /** 애니메이션 진행 중인 타일이 하나라도 있으면 true */
+  isAnimating() {
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++) {
+        const t = this.grid[r][c];
+        if (t && (t.moving || t.spawning)) return true;
+      }
+    return false;
+  }
+
+  /** 모든 타일 프레임 갱신 */
+  update(dt) {
+    let busy = false;
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++) {
+        const t = this.grid[r][c];
+        if (t && t.update(dt)) busy = true;
+      }
+    return busy;
+  }
+
+  /** 현재 보드에 가능한 이동(매치를 만드는 스왑)이 하나라도 있는지 검사 */
+  hasPossibleMove() {
+    for (let r = 0; r < BOARD_ROWS; r++) {
+      for (let c = 0; c < BOARD_COLS; c++) {
+        // 오른쪽/아래와 스왑 시도 후 매치 여부 확인
+        for (const [dr, dc] of [[0, 1], [1, 0]]) {
+          const nr = r + dr, nc = c + dc;
+          if (!this.inBounds(nr, nc)) continue;
+          this._swapCells(r, c, nr, nc);
+          const has = MatchDetector.hasAnyMatch(this);
+          this._swapCells(r, c, nr, nc); // 원복
+          if (has) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** 좌표 기반 즉시 스왑 (검사용, 애니메이션 없음) */
+  _swapCells(r1, c1, r2, c2) {
+    const a = this.grid[r1][c1], b = this.grid[r2][c2];
+    this.grid[r1][c1] = b; this.grid[r2][c2] = a;
+    if (a) { a.row = r2; a.col = c2; }
+    if (b) { b.row = r1; b.col = c1; }
+  }
+}
+
+
+// ===== src/core/GameEngine.js =====
+// =============================================================
+//  GameEngine.js  -  코어 게임 엔진 (상태머신 오케스트레이션)
+//
+//  전체 흐름:
+//    IDLE ──플레이어 스왑──> SWAP ──> MATCH_CHECK
+//      MATCH_CHECK: 매치 있음 -> DESTROY / 없음(플레이어스왑) -> 되돌리기 -> IDLE
+//                   없음(연쇄중) -> CHECK_GAME_OVER
+//    DESTROY ──> GRAVITY_FALL ──> REFILL ──> MATCH_CHECK (연쇄 반복)
+//    CHECK_GAME_OVER ──> IDLE(계속) 또는 게임종료 콜백
+// =============================================================
+
+
+
+
+class GameEngine {
+  /**
+   * @param {Object} hooks 외부 콜백(광고/퍽/UI 연동)
+   * @param {(n:number)=>void} [hooks.onStageClear]
+   * @param {()=>void}         [hooks.onOutOfMoves]
+   * @param {()=>void}         [hooks.onHeartEmpty]
+   * @param {(choices:any[])=>void} [hooks.onPerkSelection]
+   * @param {(state:string)=>void}  [hooks.onStateChange]
+   * @param {(e:object)=>void}      [hooks.onEvent] 점수/연쇄 등 UI 이벤트
+   */
+  constructor(hooks = {}) {
+    this.hooks = hooks;
+    this.board = new Board();
+
+    // --- 진행 상태 ---
+    this.stage = 1;
+    this.movesLeft = STAGE_DEFAULTS.BASE_MOVES;
+    this.hearts = STAGE_DEFAULTS.MAX_HEARTS;
+    this.score = 0;
+    this.targetScore = this._computeTargetScore(this.stage);
+    this.cascadeLevel = 0;   // 연쇄 단계 (점수 배율)
+    this.gameOver = false;
+
+    // 퍽(패시브) 효과 누적치 — PerkSystem이 채운다
+    this.perks = {
+      bombRangeBonus: 0,     // +N (3x3 -> (3+2N)x(3+2N) 식으로 확장 가능)
+      extraMoveOn4: 0,       // 4콤보 생성 시 이동 +N
+      scoreMultiplier: 1,
+    };
+
+    // --- 스왑/연쇄 처리용 임시 상태 ---
+    this._pendingSwap = null;    // {a, b, isPlayer}
+    this._revertSwap = null;
+    this._lastMatch = null;
+
+    this._buildStateMachine();
+  }
+
+  // ---------------------------------------------------------
+  //  상태머신 구성
+  // ---------------------------------------------------------
+  _buildStateMachine() {
+    const S = GameState;
+    this.fsm = new StateMachine(S.IDLE, {
+
+      // --- 입력 대기 ---
+      [S.IDLE]: {
+        enter: () => { this.cascadeLevel = 0; },
+        update: () => {
+          // 스왑 요청이 들어오면 SWAP 으로
+          if (this._pendingSwap) return S.SWAP;
+          return null;
+        },
+      },
+
+      // --- 스왑 애니메이션 ---
+      [S.SWAP]: {
+        enter: () => {
+          const { a, b } = this._pendingSwap;
+          // 논리 교환 + 애니메이션 지시
+          this.board.swapLogical(a, b);
+          a.moveTo(a.row, a.col, TIMING.SWAP);
+          b.moveTo(b.row, b.col, TIMING.SWAP);
+        },
+        update: () => {
+          if (this.board.isAnimating()) return null;
+          // 콤보(특수+특수) 스왑이면 즉시 콤보 발동
+          const { a, b, isPlayer } = this._pendingSwap;
+          if (isPlayer && a.isSpecial && b.isSpecial) {
+            this._triggerCombo(a, b);
+            this._pendingSwap = null;
+            return S.DESTROY;
+          }
+          return GameState.MATCH_CHECK;
+        },
+      },
+
+      // --- 매치 판정 ---
+      [S.MATCH_CHECK]: {
+        enter: () => {
+          const hint = this._pendingSwap
+            ? { row: this._pendingSwap.b.row, col: this._pendingSwap.b.col }
+            : null;
+          this._lastMatch = MatchDetector.findMatches(this.board, hint);
+        },
+        update: () => {
+          const m = this._lastMatch;
+          const hadPlayerSwap = this._pendingSwap && this._pendingSwap.isPlayer;
+
+          if (m.cells.size > 0) {
+            // 매치 성립 -> 이동 소비(플레이어 스왑일 때만) 후 파괴
+            if (hadPlayerSwap) {
+              this._consumeMove(m);
+            }
+            this._pendingSwap = null;
+            return GameState.DESTROY;
+          }
+
+          // 매치 없음
+          if (hadPlayerSwap) {
+            // 잘못된 스왑 -> 되돌리기
+            this._revertSwap = this._pendingSwap;
+            this._pendingSwap = null;
+            const { a, b } = this._revertSwap;
+            this.board.swapLogical(a, b);
+            a.moveTo(a.row, a.col, TIMING.SWAP_BACK);
+            b.moveTo(b.row, b.col, TIMING.SWAP_BACK);
+            return GameState.IDLE; // 되돌린 뒤 대기
+          }
+          // 연쇄 종료 -> 게임오버/클리어 판정
+          return GameState.CHECK_GAME_OVER;
+        },
+      },
+
+      // --- 파괴 (특수타일 연쇄 발동 포함) ---
+      [S.DESTROY]: {
+        enter: () => {
+          this.cascadeLevel++;
+          const m = this._lastMatch || { cells: new Set(), spawns: [] };
+
+          // 1) 매치에 포함된 특수타일들을 연쇄 발동시켜 제거 범위를 확장
+          const cells = this._expandSpecials(m.cells);
+
+          // 2) 점수 계산
+          this._awardScore(cells.size);
+
+          // 3) 제거 + 특수타일 스폰
+          this.board.destroyCells(cells, m.spawns || []);
+
+          // 4콤보(로켓급) 생성 시 퍽 보너스 이동
+          if ((m.spawns || []).some(s => s.type === SpecialType.ROCKET) && this.perks.extraMoveOn4 > 0) {
+            this.movesLeft += this.perks.extraMoveOn4;
+            this._emit({ type: 'perk-extra-move', amount: this.perks.extraMoveOn4 });
+          }
+          this._lastMatch = null;
+        },
+        update: () => {
+          if (this.board.isAnimating()) return null;
+          return GameState.GRAVITY_FALL;
+        },
+      },
+
+      // --- 중력 낙하 ---
+      [S.GRAVITY_FALL]: {
+        enter: () => { this.board.applyGravity(); },
+        update: () => {
+          if (this.board.isAnimating()) return null;
+          return GameState.REFILL;
+        },
+      },
+
+      // --- 리필 ---
+      [S.REFILL]: {
+        enter: () => { this.board.refill(); },
+        update: () => {
+          if (this.board.isAnimating()) return null;
+          // 리필 후 다시 매치 판정 (연쇄)
+          return GameState.MATCH_CHECK;
+        },
+      },
+
+      // --- 클리어 / 게임오버 판정 ---
+      [S.CHECK_GAME_OVER]: {
+        enter: () => {
+          if (this.score >= this.targetScore) {
+            this._onStageClear();
+          } else if (this.movesLeft <= 0) {
+            this._onOutOfMoves();
+          } else if (!this.board.hasPossibleMove()) {
+            // 데드락: 이동 가능한 수가 없음 -> 보드 셔플
+            this._emit({ type: 'shuffle' });
+            this.board.reset();
+          }
+        },
+        update: () => GameState.IDLE,
+      },
+
+    }, {
+      onChange: (from, to) => {
+        if (this.hooks.onStateChange) this.hooks.onStateChange(to, from);
+      },
+    });
+  }
+
+  // ---------------------------------------------------------
+  //  공개 API
+  // ---------------------------------------------------------
+
+  /** 매 프레임 갱신 (렌더 루프에서 호출) */
+  update(dt) {
+    this.board.update(dt);
+    if (!this.gameOver) this.fsm.update(dt);
+  }
+
+  get state() { return this.fsm.current; }
+
+  /** IDLE 상태에서만 플레이어 스왑을 받는다 */
+  canAcceptInput() {
+    return this.fsm.is(GameState.IDLE) && !this.gameOver && !this.board.isAnimating();
+  }
+
+  /**
+   * 플레이어가 두 타일을 스왑 시도.
+   * @returns {boolean} 접수되었으면 true
+   */
+  requestSwap(a, b) {
+    if (!this.canAcceptInput()) return false;
+    if (!a || !b || a === b) return false;
+    if (!this.board.areAdjacent(a, b)) return false;
+    this._pendingSwap = { a, b, isPlayer: true };
+    return true;
+  }
+
+  /** 광고 보상: 이동 +N */
+  grantRewardMoves(n = STAGE_DEFAULTS.REWARD_AD_MOVES) {
+    this.movesLeft += n;
+    this.gameOver = false;
+    this._emit({ type: 'reward-moves', amount: n });
+  }
+
+  /** 광고 보상: 하트 리필 */
+  grantHeartRefill() {
+    this.hearts = STAGE_DEFAULTS.MAX_HEARTS;
+    this._emit({ type: 'heart-refill' });
+  }
+
+  /** 퍽 적용 (PerkSystem이 선택 결과를 넘겨줌) */
+  applyPerk(perk) {
+    if (typeof perk.apply === 'function') perk.apply(this);
+    this._emit({ type: 'perk-applied', perk: perk.id });
+  }
+
+  // ---------------------------------------------------------
+  //  내부 로직
+  // ---------------------------------------------------------
+
+  /** 이동 소비 + 4콤보 퍽 보너스 처리 */
+  _consumeMove() {
+    this.movesLeft = Math.max(0, this.movesLeft - 1);
+    this._emit({ type: 'move-used', movesLeft: this.movesLeft });
+  }
+
+  /**
+   * 제거 대상 셀 중 특수타일이 있으면 그 효과 범위를 재귀적으로 합친다.
+   * (로켓이 폭탄을 건드리면 폭탄도 터지는 연쇄)
+   * @param {Set<string>} baseCells
+   * @returns {Set<string>}
+   */
+  _expandSpecials(baseCells) {
+    const result = new Set(baseCells);
+    const queue = [];
+    for (const key of baseCells) {
+      const [r, c] = key.split(',').map(Number);
+      const t = this.board.grid[r][c];
+      if (t && t.isSpecial) queue.push(t);
+    }
+    const activated = new Set();
+    while (queue.length) {
+      const t = queue.shift();
+      if (activated.has(t.id)) continue;
+      activated.add(t.id);
+      const affected = this.board.activateSpecial(t);
+      for (const key of affected) {
+        result.add(key);
+        const [r, c] = key.split(',').map(Number);
+        const other = this.board.grid[r][c];
+        if (other && other.isSpecial && !activated.has(other.id)) queue.push(other);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * 콤보 발동 (특수 + 특수 스왑).
+   * 스펙 #3:
+   *   - 로켓 + 폭탄  => 3줄 가로 + 3줄 세로 제거
+   *   - 라이트볼 + 라이트볼 => 보드 전체 제거
+   */
+  _triggerCombo(a, b) {
+    const types = [a.special, b.special].sort();
+    const cells = new Set();
+    const R = this.board.grid.length, C = this.board.grid[0].length;
+
+    const bothLightBall = a.special === SpecialType.LIGHT_BALL && b.special === SpecialType.LIGHT_BALL;
+    const rocketBomb = types.includes(SpecialType.ROCKET) && types.includes(SpecialType.BOMB);
+
+    if (bothLightBall) {
+      // 보드 전체
+      for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) cells.add(`${r},${c}`);
+    } else if (rocketBomb) {
+      // 로켓 위치 기준 가로 3줄 + 세로 3줄
+      const r = a.row, c = a.col;
+      for (let dr = -1; dr <= 1; dr++)
+        for (let cc = 0; cc < C; cc++)
+          if (this.board.inBounds(r + dr, cc)) cells.add(`${r + dr},${cc}`);
+      for (let dc = -1; dc <= 1; dc++)
+        for (let rr = 0; rr < R; rr++)
+          if (this.board.inBounds(rr, c + dc)) cells.add(`${rr},${c + dc}`);
+    } else {
+      // 그 외 조합은 각자 효과를 합산
+      for (const k of this.board.activateSpecial(a)) cells.add(k);
+      for (const k of this.board.activateSpecial(b)) cells.add(k);
+    }
+
+    this._consumeMove();
+    const expanded = this._expandSpecials(cells);
+    this._awardScore(expanded.size);
+    this.board.destroyCells(expanded, []);
+    this._lastMatch = null;
+    this._emit({ type: 'combo', combo: types.join('+'), cleared: expanded.size });
+  }
+
+  /** 점수 부여 (연쇄 단계 + 퍽 배율 반영) */
+  _awardScore(tileCount) {
+    const per = SCORE.PER_TILE + SCORE.CASCADE_BONUS * Math.max(0, this.cascadeLevel - 1);
+    const gained = Math.round(tileCount * per * this.perks.scoreMultiplier);
+    this.score += gained;
+    this._emit({ type: 'score', gained, total: this.score, cascade: this.cascadeLevel });
+  }
+
+  _computeTargetScore(stage) {
+    // 스테이지가 올라갈수록 목표 점수 증가
+    return 1000 + (stage - 1) * 600;
+  }
+
+  _onStageClear() {
+    const cleared = this.stage;
+    this._emit({ type: 'stage-clear', stage: cleared });
+    if (this.hooks.onStageClear) this.hooks.onStageClear(cleared);
+
+    // 스펙 #5: 3스테이지마다 전면광고 체크
+    if (cleared % 3 === 0 && this.hooks.onInterstitialCheck) {
+      this.hooks.onInterstitialCheck(cleared);
+    }
+    // 스펙 #4: 3스테이지마다 퍽 선택
+    if (cleared % STAGE_DEFAULTS.PERK_EVERY === 0 && this.hooks.onPerkSelection) {
+      this.hooks.onPerkSelection(cleared);
+    }
+
+    // 다음 스테이지 준비
+    this.stage++;
+    this.movesLeft = STAGE_DEFAULTS.BASE_MOVES;
+    this.score = 0;
+    this.targetScore = this._computeTargetScore(this.stage);
+    this.board.reset();
+  }
+
+  _onOutOfMoves() {
+    // 스펙 #5: 이동 소진 -> 보상형 광고 훅
+    this.gameOver = true;
+    this._emit({ type: 'out-of-moves' });
+    if (this.hooks.onOutOfMoves) this.hooks.onOutOfMoves();
+  }
+
+  _emit(e) { if (this.hooks.onEvent) this.hooks.onEvent(e); }
+}
+
+
+// ===== src/systems/PerkSystem.js =====
+// =============================================================
+//  PerkSystem.js  -  로그라이트 퍽(패시브 스킬) 시스템
+//  스펙 #4: 3스테이지 클리어마다 3개 선택지 제공.
+// =============================================================
+
+/**
+ * 각 퍽은 { id, name, desc, apply(engine) } 구조.
+ * apply()는 engine.perks 수치를 조정한다 (GameEngine이 실제 효과 반영).
+ */
+const PERK_POOL = [
+  {
+    id: 'bomb_range',
+    name: '강화 화약',
+    desc: '폭탄 폭발 범위 +15%',
+    apply: (engine) => { engine.perks.bombRangeBonus += 0.15; },
+  },
+  {
+    id: 'extra_move_4combo',
+    name: '전술적 여유',
+    desc: '4콤보 생성 시 이동 +1',
+    apply: (engine) => { engine.perks.extraMoveOn4 += 1; },
+  },
+  {
+    id: 'score_boost',
+    name: '점수 증폭기',
+    desc: '획득 점수 +20%',
+    apply: (engine) => { engine.perks.scoreMultiplier += 0.2; },
+  },
+  {
+    id: 'starting_moves',
+    name: '넉넉한 준비',
+    desc: '스테이지 시작 이동 +3',
+    apply: (engine) => { engine.perks._startMovesBonus = (engine.perks._startMovesBonus || 0) + 3; engine.movesLeft += 3; },
+  },
+  {
+    id: 'cascade_master',
+    name: '연쇄의 달인',
+    desc: '연쇄 보너스 점수 2배',
+    apply: (engine) => { engine.perks.scoreMultiplier += 0.15; },
+  },
+  {
+    id: 'lucky_rocket',
+    name: '행운의 로켓',
+    desc: '4콤보 생성 시 이동 +1 (중첩)',
+    apply: (engine) => { engine.perks.extraMoveOn4 += 1; },
+  },
+];
+
+class PerkSystem {
+  constructor(pool = PERK_POOL) {
+    this.pool = pool;
+    this.acquired = []; // 이미 획득한 퍽 id (중복 방지 옵션)
+  }
+
+  /**
+   * 무작위 3개 선택지 생성 (이미 가진 퍽 제외).
+   * @param {number} count
+   * @returns {Array} 퍽 선택지
+   */
+  rollChoices(count = 3) {
+    const available = this.pool.filter(p => !this.acquired.includes(p.id) || p.repeatable);
+    const shuffled = [...available].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, count);
+  }
+
+  /** 선택 확정 */
+  choose(perk, engine) {
+    this.acquired.push(perk.id);
+    engine.applyPerk(perk);
+  }
+}
+
+
+// ===== src/systems/AdInterface.js =====
+// =============================================================
+//  AdInterface.js  -  광고 연동 인터페이스 (IAP 없음, 보상형/전면 광고만)
+//  스펙 #5: 실제 광고 SDK(AdMob/Unity Ads 등)는 여기서 어댑터로 교체.
+//  게임 코어는 이 인터페이스만 알고, SDK 세부는 모른다.
+// =============================================================
+
+/**
+ * 광고 제공자 어댑터가 구현해야 할 형태:
+ *   showRewarded(placement): Promise<boolean>  // 시청 완료 시 true
+ *   showInterstitial(placement): Promise<void>
+ * 기본 제공은 개발용 MockAdProvider.
+ */
+class AdInterface {
+  /**
+   * @param {GameEngine} engine
+   * @param {object} provider 광고 제공자 어댑터
+   */
+  constructor(engine, provider = new MockAdProvider()) {
+    this.engine = engine;
+    this.provider = provider;
+  }
+
+  /**
+   * 이동 소진 -> +5 이동 보상형 광고 팝업.
+   * @returns {Promise<boolean>} 보상 지급 여부
+   */
+  async onOutOfMoves() {
+    const rewarded = await this.provider.showRewarded('extra_moves');
+    if (rewarded) {
+      this.engine.grantRewardMoves(STAGE_DEFAULTS.REWARD_AD_MOVES);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 하트 소진 -> 하트 리필 보상형 광고 팝업.
+   * @returns {Promise<boolean>}
+   */
+  async onHeartEmpty() {
+    const rewarded = await this.provider.showRewarded('heart_refill');
+    if (rewarded) {
+      this.engine.grantHeartRefill();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 스테이지 클리어 -> 3의 배수 스테이지에서 전면광고.
+   * @param {number} stageNum
+   */
+  async onStageClear(stageNum) {
+    if (stageNum % 3 === 0) {
+      await this.provider.showInterstitial('stage_clear');
+    }
+  }
+}
+
+/** 개발/테스트용 가짜 광고 제공자 (항상 보상 지급) */
+class MockAdProvider {
+  showRewarded(placement) {
+    console.log(`[MockAd] 보상형 광고 시청: ${placement}`);
+    return Promise.resolve(true);
+  }
+  showInterstitial(placement) {
+    console.log(`[MockAd] 전면 광고 노출: ${placement}`);
+    return Promise.resolve();
+  }
+}
+
+
+// ===== src/render/Renderer.js =====
+// =============================================================
+//  Renderer.js  -  Canvas 렌더링 (타일, 특수타일 마커, HUD)
+//  * 코어 로직과 분리되어 있어 나중에 스프라이트/이펙트로 교체 가능.
+// =============================================================
+
+class Renderer {
+  constructor(canvas, engine) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.engine = engine;
+    this.selected = null; // 강조 표시할 타일
+
+    const w = BOARD_PADDING * 2 + BOARD_COLS * TILE_SIZE;
+    const h = BOARD_PADDING * 2 + BOARD_ROWS * TILE_SIZE;
+    canvas.width = w;
+    canvas.height = h;
+  }
+
+  draw() {
+    const ctx = this.ctx;
+    const { width, height } = this.canvas;
+
+    // 배경
+    ctx.fillStyle = '#141a2e';
+    ctx.fillRect(0, 0, width, height);
+
+    // 보드 격자 배경
+    for (let r = 0; r < BOARD_ROWS; r++) {
+      for (let c = 0; c < BOARD_COLS; c++) {
+        const x = BOARD_PADDING + c * TILE_SIZE;
+        const y = BOARD_PADDING + r * TILE_SIZE;
+        ctx.fillStyle = (r + c) % 2 === 0 ? '#1e2743' : '#232e52';
+        ctx.fillRect(x, y, TILE_SIZE, TILE_SIZE);
+      }
+    }
+
+    // 타일 (파괴 애니메이션 중인 것 포함해서 그리려면 별도 리스트 필요하나
+    //       여기서는 살아있는 그리드만 그린다)
+    for (let r = 0; r < BOARD_ROWS; r++) {
+      for (let c = 0; c < BOARD_COLS; c++) {
+        const t = this.engine.board.grid[r][c];
+        if (t) this._drawTile(t);
+      }
+    }
+
+    // 선택 강조
+    if (this.selected) {
+      const t = this.selected;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(t.px + 3, t.py + 3, TILE_SIZE - 6, TILE_SIZE - 6);
+    }
+  }
+
+  _drawTile(t) {
+    const ctx = this.ctx;
+    const pad = 6;
+    const s = (TILE_SIZE - pad * 2) * (t.scale ?? 1);
+    const cx = t.px + TILE_SIZE / 2;
+    const cy = t.py + TILE_SIZE / 2;
+    const x = cx - s / 2;
+    const y = cy - s / 2;
+
+    // 본체
+    ctx.fillStyle = COLOR_HEX[t.color] || '#888';
+    roundRect(ctx, x, y, s, s, 10);
+    ctx.fill();
+
+    // 하이라이트
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    roundRect(ctx, x + s * 0.12, y + s * 0.1, s * 0.5, s * 0.28, 6);
+    ctx.fill();
+
+    // 특수타일 마커
+    if (t.isSpecial) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 3;
+      switch (t.special) {
+        case SpecialType.ROCKET: {
+          // 방향 화살표
+          ctx.font = `bold ${s * 0.5}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(t.rocketDir === RocketDir.HORIZONTAL ? '↔' : '↕', 0, 0);
+          break;
+        }
+        case SpecialType.BOMB: {
+          ctx.beginPath();
+          ctx.arc(0, 0, s * 0.22, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.font = `bold ${s * 0.3}px sans-serif`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText('B', 0, 1);
+          break;
+        }
+        case SpecialType.LIGHT_BALL: {
+          const grad = ctx.createRadialGradient(0, 0, 2, 0, 0, s * 0.4);
+          grad.addColorStop(0, '#ffffff');
+          grad.addColorStop(1, 'rgba(255,255,255,0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(0, 0, s * 0.4, 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        }
+        case SpecialType.PROPELLER: {
+          ctx.font = `bold ${s * 0.5}px sans-serif`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText('✈', 0, 0);
+          break;
+        }
+      }
+      ctx.restore();
+    }
+  }
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+
+// ===== src/render/InputController.js =====
+// =============================================================
+//  InputController.js  -  마우스/터치 드래그로 타일 스왑
+// =============================================================
+
+class InputController {
+  /**
+   * @param {HTMLCanvasElement} canvas
+   * @param {GameEngine} engine
+   * @param {Renderer} renderer 선택 강조 표시용
+   */
+  constructor(canvas, engine, renderer) {
+    this.canvas = canvas;
+    this.engine = engine;
+    this.renderer = renderer;
+    this.dragStart = null; // {row, col, tile}
+
+    this._bind();
+  }
+
+  _bind() {
+    const c = this.canvas;
+    c.addEventListener('mousedown', (e) => this._onDown(e));
+    c.addEventListener('mousemove', (e) => this._onMove(e));
+    window.addEventListener('mouseup', () => this._onUp());
+
+    c.addEventListener('touchstart', (e) => { e.preventDefault(); this._onDown(e.touches[0]); }, { passive: false });
+    c.addEventListener('touchmove', (e) => { e.preventDefault(); this._onMove(e.touches[0]); }, { passive: false });
+    window.addEventListener('touchend', () => this._onUp());
+  }
+
+  _cellFromEvent(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    const scaleX = this.canvas.width / rect.width;
+    const scaleY = this.canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    const col = Math.floor((x - BOARD_PADDING) / TILE_SIZE);
+    const row = Math.floor((y - BOARD_PADDING) / TILE_SIZE);
+    if (row < 0 || row >= BOARD_ROWS || col < 0 || col >= BOARD_COLS) return null;
+    return { row, col };
+  }
+
+  _onDown(e) {
+    if (!this.engine.canAcceptInput()) return;
+    const cell = this._cellFromEvent(e);
+    if (!cell) return;
+    const tile = this.engine.board.grid[cell.row][cell.col];
+    if (!tile) return;
+    this.dragStart = { ...cell, tile };
+    this.renderer.selected = tile;
+  }
+
+  _onMove(e) {
+    if (!this.dragStart) return;
+    const cell = this._cellFromEvent(e);
+    if (!cell) return;
+    // 시작 칸과 인접한 다른 칸으로 드래그하면 스왑 시도
+    const dr = Math.abs(cell.row - this.dragStart.row);
+    const dc = Math.abs(cell.col - this.dragStart.col);
+    if (dr + dc === 1) {
+      const target = this.engine.board.grid[cell.row][cell.col];
+      if (target && this.engine.requestSwap(this.dragStart.tile, target)) {
+        this.dragStart = null;
+        this.renderer.selected = null;
+      }
+    }
+  }
+
+  _onUp() {
+    this.dragStart = null;
+    this.renderer.selected = null;
+  }
+}
+
+
+// ===== src/main.js =====
+// =============================================================
+//  main.js  -  엔트리 포인트: 엔진 + 렌더러 + 입력 + 시스템 배선
+// =============================================================
+
+
+
+
+
+const canvas = document.getElementById('game');
+const hud = {
+  stage: document.getElementById('stage'),
+  moves: document.getElementById('moves'),
+  score: document.getElementById('score'),
+  target: document.getElementById('target'),
+  hearts: document.getElementById('hearts'),
+  log: document.getElementById('log'),
+};
+const perkOverlay = document.getElementById('perk-overlay');
+const perkChoices = document.getElementById('perk-choices');
+
+// --- 시스템 인스턴스 ---
+const perkSystem = new PerkSystem();
+let adInterface; // engine 생성 후 배선
+
+// --- 엔진 생성 (외부 콜백 연결) ---
+const engine = new GameEngine({
+  onStateChange: (to) => { /* 디버그용: console.log(to) */ },
+  onEvent: (e) => logEvent(e),
+  onOutOfMoves: () => {
+    // 스펙 #5: 이동 소진 -> 보상형 광고
+    adInterface.onOutOfMoves();
+  },
+  onInterstitialCheck: (stage) => {
+    // 스펙 #5: 3의 배수 스테이지 전면광고
+    adInterface.onStageClear(stage);
+  },
+  onPerkSelection: () => {
+    // 스펙 #4: 퍽 3개 선택 UI
+    showPerkSelection();
+  },
+});
+
+adInterface = new AdInterface(engine);
+
+const renderer = new Renderer(canvas, engine);
+new InputController(canvas, engine, renderer);
+
+// --- HUD 갱신 ---
+function updateHud() {
+  hud.stage.textContent = engine.stage;
+  hud.moves.textContent = engine.movesLeft;
+  hud.score.textContent = engine.score;
+  hud.target.textContent = engine.targetScore;
+  hud.hearts.textContent = '❤'.repeat(engine.hearts);
+}
+
+function logEvent(e) {
+  if (!hud.log) return;
+  const labels = {
+    'stage-clear': `🎉 스테이지 ${e.stage} 클리어!`,
+    'combo': `💥 콤보 ${e.combo} → ${e.cleared}칸 제거`,
+    'out-of-moves': `⛔ 이동 소진! 광고 보상 확인`,
+    'reward-moves': `➕ 광고 보상: 이동 +${e.amount}`,
+    'shuffle': `🔀 이동 불가 → 보드 셔플`,
+    'perk-applied': `✨ 퍽 획득: ${e.perk}`,
+  };
+  if (labels[e.type]) {
+    const line = document.createElement('div');
+    line.textContent = labels[e.type];
+    hud.log.prepend(line);
+    while (hud.log.childElementCount > 8) hud.log.lastChild.remove();
+  }
+}
+
+// --- 퍽 선택 UI ---
+function showPerkSelection() {
+  const choices = perkSystem.rollChoices(3);
+  perkChoices.innerHTML = '';
+  choices.forEach((perk) => {
+    const btn = document.createElement('button');
+    btn.className = 'perk-card';
+    btn.innerHTML = `<strong>${perk.name}</strong><span>${perk.desc}</span>`;
+    btn.onclick = () => {
+      perkSystem.choose(perk, engine);
+      perkOverlay.classList.add('hidden');
+    };
+    perkChoices.appendChild(btn);
+  });
+  perkOverlay.classList.remove('hidden');
+}
+
+// --- 게임 루프 ---
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  engine.update(dt);
+  renderer.draw();
+  updateHud();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// 디버그: 전역 노출
+window.__game = { engine, renderer, perkSystem };
+
+</script>
