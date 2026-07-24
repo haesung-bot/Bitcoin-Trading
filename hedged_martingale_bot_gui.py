@@ -45,6 +45,7 @@ class HedgedMartingaleGUI:
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
+        self._save_after_id: str | None = None
 
         self._build_widgets()
         self._load_saved_credentials()
@@ -86,6 +87,11 @@ class HedgedMartingaleGUI:
         tk.Entry(form, textvariable=self.tg_chat_var, width=50).grid(row=3, column=1, pady=3, sticky="we")
 
         form.columnconfigure(1, weight=1)
+
+        # 4개 입력값(Key/Secret/토큰/ChatID)은 타이핑할 때마다 자동 저장되어,
+        # 프로그램을 강제 종료해도 다음 실행 시 그대로 남아있는다.
+        for var in (self.api_key_var, self.api_secret_var, self.tg_token_var, self.tg_chat_var):
+            var.trace_add("write", self._schedule_save)
 
         btn_frame = tk.Frame(self.root)
         btn_frame.pack(fill="x", padx=12, pady=10)
@@ -158,6 +164,12 @@ class HedgedMartingaleGUI:
         except Exception as e:
             self._log(f"자격증명 저장 실패: {e}")
 
+    def _schedule_save(self, *_args) -> None:
+        """입력칸이 바뀔 때마다 호출되며, 타이핑이 잠시 멈춘 뒤(500ms) 한 번만 저장한다."""
+        if self._save_after_id is not None:
+            self.root.after_cancel(self._save_after_id)
+        self._save_after_id = self.root.after(500, self._save_credentials)
+
     # ───────────── 시작/정지 ─────────────
     def _on_start_clicked(self) -> None:
         api_key = self.api_key_var.get().strip()
@@ -217,6 +229,7 @@ class HedgedMartingaleGUI:
         self.status_var.set("상태: 대기 중")
 
     def _on_close(self) -> None:
+        self._save_credentials()
         self.stop_event.set()
         self.root.destroy()
 
