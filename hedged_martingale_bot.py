@@ -226,14 +226,30 @@ class LiveBroker:
         except Exception as e:
             logger.warning("레버리지 설정 실패: %s", e)
 
-    def get_balance(self) -> float:
-        bal = self.exchange.fetch_balance()
+    def _read_usdt_balance(self, params: dict) -> float:
+        bal = self.exchange.fetch_balance(params)
         usdt = bal.get("USDT", {}) or {}
         free = usdt.get("free")
         total = usdt.get("total")
-        # 게이트아이오 선물은 자금이 포지션 증거금에 묶이면 free=0이 될 수 있어, free가 0이면 total로 대체한다.
-        balance = free if free else (total or 0.0)
-        return float(balance)
+        # 자금이 포지션 증거금에 묶이면 free=0이 될 수 있어, free가 0이면 total로 대체한다.
+        return float(free if free else (total or 0.0))
+
+    def get_balance(self) -> float:
+        # 1) 기본 선물계좌(classic futures) 조회
+        try:
+            balance = self._read_usdt_balance({})
+        except Exception as e:
+            logger.warning("잔고 조회 실패: %s", e)
+            balance = 0.0
+        # 2) 0이면 통합계좌(Unified Account)에 자금이 있을 수 있어 재조회
+        if balance <= 0 and self.exchange_id in ("gate", "gateio"):
+            try:
+                balance = self._read_usdt_balance({"unifiedAccount": True})
+                if balance > 0:
+                    logger.info("통합계좌(Unified Account)에서 USDT 잔고를 조회했습니다: %.4f", balance)
+            except Exception as e:
+                logger.debug("통합계좌 잔고 조회 실패: %s", e)
+        return balance
 
     def quantize_qty(self, qty_btc: float, price: float) -> float:
         """계산된 BTC 수량을 거래소에서 실제 주문 가능한 값으로 보정해 BTC 단위로 돌려준다.
@@ -332,15 +348,21 @@ class LiveBroker:
 
 
 def make_qty_provider(broker) -> Callable[[float], float]:
-    """1차 진입 수량 = (잔고 * 2% 마진) * 10배 레버리지 / 현재가.
+    """1차 진입 규모(USDT) = 레버리지한 잔고(잔고 x 10배)의 2%.
 
-    계산된 BTC 수량은 broker.quantize_qty로 거래소 최소 주문 단위에 맞게 보정된다.
+    즉 주문 명목가치(USDT) = 잔고 x LEVERAGE x INITIAL_MARGIN_PCT = 잔고의 20%.
+    이 USDT 금액을 현재가로 나눠 BTC 수량으로 바꾼 뒤, broker.quantize_qty로 거래소
+    최소 주문 단위에 맞게 보정한다.
     """
 
     def _provider(price: float) -> float:
-        margin = broker.get_balance() * INITIAL_MARGIN_PCT
-        notional = margin * LEVERAGE
-        qty_btc = notional / price
+        balance = broker.get_balance()
+        notional_usdt = balance * LEVERAGE * INITIAL_MARGIN_PCT  # 레버리지한 잔고의 2%
+        qty_btc = notional_usdt / price
+        logger.info(
+            "1차 진입 규모 계산: 잔고=%.4f USDT x 레버리지 %sx x %.0f%% = 주문금액 %.4f USDT (= %.8f BTC)",
+            balance, LEVERAGE, INITIAL_MARGIN_PCT * 100, notional_usdt, qty_btc,
+        )
         return broker.quantize_qty(qty_btc, price)
 
     return _provider
