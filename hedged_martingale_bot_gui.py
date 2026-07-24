@@ -51,6 +51,7 @@ class HedgedMartingaleGUI:
         self._load_saved_credentials()
         self._install_log_handler()
         self._poll_log_queue()
+        self._log(f"프로그램 버전: {core.VERSION}")
         self._log("프로그램이 시작되었습니다. API Key/Secret 입력 후 '매매 시작'을 누르세요.")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 

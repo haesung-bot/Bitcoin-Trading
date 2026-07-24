@@ -25,6 +25,10 @@ hedged_martingale_bot.py
 
 from __future__ import annotations
 
+# 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
+# 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
+VERSION = "2026-07-24-e (자동동기화+상태초기화+버전표시)"
+
 import argparse
 import json
 import logging
@@ -646,6 +650,7 @@ class HedgedMartingaleBot:
         self._save_state()
 
     def run_forever(self, market_data: PublicMarketData, poll_sec: int = POLL_SEC, stop_event: Optional[threading.Event] = None) -> None:
+        logger.info("프로그램 버전: %s", VERSION)
         logger.info("자동매매 시작 (%s, 레버리지 %sx, %s)", self.long.mode_label, LEVERAGE, TIMEFRAME)
         try:
             logger.info("현재 계좌 주문가능 잔고: %.4f USDT", self.broker.get_balance())
