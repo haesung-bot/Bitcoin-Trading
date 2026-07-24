@@ -212,7 +212,12 @@ class LiveBroker:
         try:
             self.exchange.set_position_mode(hedged=True, symbol=self.symbol)
         except Exception as e:
-            logger.warning("Hedge/Dual Mode 설정 실패(이미 설정돼 있을 수 있음): %s", e)
+            if "NO_CHANGE" in str(e):
+                # Gate.io는 이미 설정된 값으로 다시 설정을 시도하면 에러 형태로 응답한다.
+                # 즉 이미 Dual Mode가 켜져 있다는 뜻이라 정상 상태다.
+                logger.info("Hedge/Dual Mode는 이미 설정되어 있습니다 (정상).")
+            else:
+                logger.warning("Hedge/Dual Mode 설정 실패: %s", e)
         try:
             self.exchange.set_leverage(leverage, self.symbol)
         except Exception as e:
@@ -237,18 +242,6 @@ class LiveBroker:
                 contract_size = p.get("contractSize") or 1
                 return abs(contracts) * contract_size
         return 0.0
-
-    def _to_contract_amount(self, qty_base: float) -> float:
-        """BTC 수량을 거래소 주문 단위로 변환한다.
-
-        Gate.io 등 계약(contract) 기반 거래소는 주문 amount가 BTC가 아니라 '계약 수'이며,
-        계약 1개 = market['contractSize']만큼의 BTC다(예: 0.0001 BTC/계약). 이를 무시하고
-        BTC 수량을 그대로 넘기면 최소 수량(1계약) 미만으로 반올림되어 주문이 거부된다.
-        바이낸스처럼 contractSize가 1인 거래소는 그대로 BTC 수량이 사용된다.
-        """
-        market = self.exchange.market(self.symbol)
-        contract_size = market.get("contractSize") or 1
-        return qty_base / contract_size
 
     def _check_min_notional(self, qty_contracts: float, price: float) -> None:
         try:
@@ -275,8 +268,22 @@ class LiveBroker:
         return {} if is_entry else {"reduceOnly": True}
 
     def fill_order(self, side: Side, is_entry: bool, qty: float, price: float) -> None:
-        qty_contracts = self._to_contract_amount(qty)
-        qty_contracts = float(self.exchange.amount_to_precision(self.symbol, qty_contracts))
+        # Gate.io 등 계약(contract) 기반 거래소는 주문 amount가 BTC가 아니라 '계약 수'이며,
+        # 계약 1개 = market['contractSize']만큼의 BTC다. 바이낸스처럼 contractSize가 1인
+        # 거래소는 그대로 BTC 수량이 사용된다.
+        market = self.exchange.market(self.symbol)
+        contract_size = market.get("contractSize") or 1
+        qty_contracts_raw = qty / contract_size
+        qty_contracts = float(self.exchange.amount_to_precision(self.symbol, qty_contracts_raw))
+        logger.info(
+            "주문 수량 계산: BTC수량=%.8f / 계약크기=%s / 계약수(반올림전)=%.4f / 계약수(반올림후)=%.4f / 가격=%.2f",
+            qty, contract_size, qty_contracts_raw, qty_contracts, price,
+        )
+        if qty_contracts <= 0:
+            raise RuntimeError(
+                f"계산된 주문 수량이 거래소 최소 단위(1계약={contract_size} BTC) 미만이라 0으로 반올림되었습니다 "
+                f"(필요 BTC수량={qty:.8f}). 계좌 잔고가 너무 작거나 EXCHANGE_API 계정의 실제 USDT 잔고를 확인하세요."
+            )
         self._check_min_notional(qty_contracts, price)
         if side == Side.LONG:
             order_side = "buy" if is_entry else "sell"
