@@ -178,16 +178,6 @@ class HedgedMartingaleGUI:
             messagebox.showerror("입력 오류", "Gate.io API Key와 Secret을 입력하세요.")
             return
 
-        confirmed = messagebox.askyesno(
-            "실거래 시작 확인",
-            "실제 자금으로 Gate.io에서 자동매매를 시작합니다.\n\n"
-            f"- 레버리지 {core.LEVERAGE}배, 마틴게일(최대 8배 물타기) 전략입니다.\n"
-            "- 시장 상황에 따라 원금 손실이 발생할 수 있습니다.\n\n"
-            "계속하시겠습니까?",
-        )
-        if not confirmed:
-            return
-
         self._save_credentials()
         core.TELEGRAM_BOT_TOKEN = self.tg_token_var.get().strip()
         core.TELEGRAM_CHAT_ID = self.tg_chat_var.get().strip()
