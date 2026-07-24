@@ -192,8 +192,8 @@ class PaperBroker:
     def apply_pnl(self, pnl: float) -> None:
         self.balance += pnl
 
-    def fetch_position_qty(self, side: Side) -> Optional[float]:
-        return None  # 모의매매는 거래소 실포지션이 없으므로 대조하지 않음
+    def fetch_position(self, side: Side) -> Optional[dict]:
+        return None  # 모의매매는 거래소 실포지션이 없으므로 동기화하지 않음(저장된 상태 유지)
 
 
 _EXCHANGE_DEFAULT_TYPE = {
@@ -283,21 +283,32 @@ class LiveBroker:
             contracts = float(min_contracts)
         return contracts * contract_size
 
-    def fetch_position_qty(self, side: Side) -> Optional[float]:
-        """재시작 시 저장된 상태와 대조하기 위해, 거래소에 실제로 열려있는 롱/숏 포지션의 BTC 수량을 조회한다."""
+    def fetch_position(self, side: Side) -> Optional[dict]:
+        """재시작 시 거래소에 실제로 열려있는 롱/숏 포지션(BTC 수량 + 평단가)을 조회한다.
+
+        반환값:
+        - None            : 조회 실패(네트워크 등) → 저장된 상태를 그대로 유지해야 함
+        - {"qty": 0, ...} : 해당 방향 포지션 없음(확실히 flat) → 내부 상태를 비워야 함
+        - {"qty": X, ...} : 실제 포지션 존재 → 이 값으로 내부 상태를 동기화
+        """
         try:
             positions = self.exchange.fetch_positions([self.symbol])
         except Exception as e:
-            logger.warning("포지션 조회 실패(대조 생략): %s", e)
+            logger.warning("포지션 조회 실패(저장된 상태 유지): %s", e)
             return None
+        contract_size = (self.exchange.market(self.symbol).get("contractSize")) or 1
         target = side.value.lower()
         for p in positions:
             p_side = (p.get("side") or "").lower()
             contracts = p.get("contracts") or 0
             if p_side == target and contracts:
-                contract_size = p.get("contractSize") or 1
-                return abs(contracts) * contract_size
-        return 0.0
+                entry = p.get("entryPrice") or p.get("markPrice")
+                return {
+                    "qty": abs(contracts) * contract_size,
+                    "entry_price": float(entry) if entry else None,
+                    "contract_size": contract_size,
+                }
+        return {"qty": 0.0, "entry_price": None, "contract_size": contract_size}
 
     def _check_min_notional(self, qty_contracts: float, price: float) -> None:
         try:
@@ -428,6 +439,27 @@ class MartingaleModule:
         self.cooldown_until = state.get("cooldown_until")
         self.consecutive_sl = state.get("consecutive_sl", 0)
         self.halted = state.get("halted", False)
+
+    def sync_from_exchange(self, actual_qty: float, entry_price: Optional[float], contract_size: float) -> bool:
+        """거래소의 실제 포지션(수량 + 평단가)에 맞춰 내부 상태를 재구성한다.
+
+        저장된 상태와 거래소가 어긋나도(수동 개입/누락 등) 거래소를 '진실'로 삼아 맞춘다.
+        평단가/총수량은 거래소 값으로 정확히 맞추고, 물타기 단계(step)는 계약 수로 추정한다.
+        반환값: 실제 포지션이 있어 동기화했으면 True, 포지션이 없어 비웠으면 False.
+        """
+        if not actual_qty or actual_qty <= 0 or not entry_price:
+            self._reset()
+            return False
+        contracts = max(1, round(actual_qty / contract_size)) if contract_size else 1
+        # 마틴게일 누적 계약수(1,3,7,15...)에 대응하도록 계약수의 비트길이로 단계를 추정
+        step = min(MAX_STEPS, max(1, contracts.bit_length()))
+        base = actual_qty / (2 ** step - 1)
+        # 같은 평단가로 base, 2base, 4base... 형태의 체결 내역을 재구성(합계 = actual_qty)
+        self.fills = [Fill(entry_price, base * (2 ** i)) for i in range(step)]
+        self.step = step
+        self._recalc_avg()  # avg_price=entry_price, total_qty=actual_qty 로 정리됨
+        self.cooldown_until = None
+        return True
 
     @property
     def in_position(self) -> bool:
@@ -572,24 +604,30 @@ class HedgedMartingaleBot:
                 "이전 매매 상태를 복원했습니다 (LONG step=%d avg=%s / SHORT step=%d avg=%s)",
                 self.long.step, self.long.avg_price, self.short.step, self.short.avg_price,
             )
-            self._reconcile_with_exchange()
+        self._sync_with_exchange()
 
-    def _reconcile_with_exchange(self) -> None:
-        """복원된 상태와 거래소의 실제 포지션 수량이 어긋나지 않는지 확인하고, 다르면 경고만 한다(자동 수정 안 함)."""
+    def _sync_with_exchange(self) -> None:
+        """거래소의 실제 포지션을 '진실'로 삼아 내부 상태를 맞춘다(B안: 자동 동기화).
+
+        - 조회 실패(None): 저장된 상태를 그대로 사용
+        - 포지션 있음: 거래소의 수량/평단가로 내부 상태를 재구성
+        - 포지션 없음: 내부 상태를 비움(거래소가 flat이므로)
+        """
         for module in (self.long, self.short):
-            if not module.in_position:
-                continue
-            actual_qty = self.broker.fetch_position_qty(module.side)
-            if actual_qty is None:
-                continue
-            if abs(actual_qty - module.total_qty) > max(module.total_qty * 0.01, 1e-8):
+            pos = self.broker.fetch_position(module.side)
+            if pos is None:
+                continue  # 조회 불가 → 저장된 상태 유지
+            had = module.in_position
+            synced = module.sync_from_exchange(pos["qty"], pos.get("entry_price"), pos.get("contract_size") or 1)
+            if synced:
                 msg = (
-                    f"[경고] {module.side.value} 저장된 상태의 수량({module.total_qty:.6f})과 "
-                    f"거래소 실제 포지션 수량({actual_qty:.6f})이 다릅니다. 프로그램이 꺼져있는 동안 "
-                    f"수동 청산/추가 등이 있었을 수 있으니 직접 확인해주세요."
+                    f"{module.side.value} 거래소 실제 포지션에 맞춰 동기화했습니다 "
+                    f"(수량={module.total_qty:.6f}, 평단={module.avg_price:.2f}, step={module.step})."
                 )
-                logger.warning(msg)
+                logger.info(msg)
                 self.notifier.send(f"[{module.mode_label}] {msg}")
+            elif had:
+                logger.info("%s 거래소에 실제 포지션이 없어 내부 상태를 초기화했습니다.", module.side.value)
 
     def _save_state(self) -> None:
         if not self.state_path:

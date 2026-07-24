@@ -108,6 +108,12 @@ class HedgedMartingaleGUI:
         )
         self.stop_btn.pack(side="left", fill="x", expand=True, padx=(6, 0))
 
+        self.reset_btn = tk.Button(
+            self.root, text="⟳ 저장된 매매상태 초기화 (정지 후 사용)", bg="#e0e0e0",
+            command=self._on_reset_clicked,
+        )
+        self.reset_btn.pack(fill="x", padx=12, pady=(0, 4))
+
         self.status_var = tk.StringVar(value="상태: 대기 중")
         tk.Label(self.root, textvariable=self.status_var, anchor="w", font=(None, 10, "bold")).pack(fill="x", padx=12)
 
@@ -219,6 +225,28 @@ class HedgedMartingaleGUI:
     def _on_stop_clicked(self) -> None:
         self.status_var.set("상태: 정지 중...")
         self.stop_event.set()
+
+    def _on_reset_clicked(self) -> None:
+        if self.worker_thread is not None and self.worker_thread.is_alive():
+            messagebox.showwarning("실행 중", "먼저 '■ 정지'를 누른 뒤 상태를 초기화하세요.")
+            return
+        confirmed = messagebox.askyesno(
+            "저장된 매매상태 초기화",
+            "저장된 매매 진행 상태를 삭제하고 다음 시작 시 처음부터 진행합니다.\n\n"
+            "⚠️ 거래소(Gate.io)에 실제로 열려있는 포지션은 이 버튼으로 삭제되지 않습니다.\n"
+            "포지션이 남아 있으면 Gate.io에서 직접 청산한 뒤 초기화하세요.\n\n"
+            "계속할까요?",
+        )
+        if not confirmed:
+            return
+        try:
+            if os.path.exists(core.STATE_PATH):
+                os.remove(core.STATE_PATH)
+                self._log("저장된 매매 상태를 초기화했습니다. 다음 시작은 포지션 0에서 새로 진행됩니다.")
+            else:
+                self._log("저장된 매매 상태 파일이 없습니다(이미 초기 상태).")
+        except Exception as e:
+            self._log(f"상태 초기화 실패: {e}")
 
     def _set_stopped_ui(self) -> None:
         self.start_btn.config(state="normal")
