@@ -58,6 +58,14 @@ function refreshRecord(stage) {
 }
 const perkOverlay = document.getElementById('perk-overlay');
 const perkChoices = document.getElementById('perk-choices');
+const resultOverlay = document.getElementById('result-overlay');
+const resultEls = {
+  title: document.getElementById('result-title'),
+  time: document.getElementById('result-time'),
+  best: document.getElementById('result-best'),
+  delta: document.getElementById('result-delta'),
+  continue: document.getElementById('result-continue'),
+};
 
 // --- 시스템 인스턴스 ---
 const perkSystem = new PerkSystem();
@@ -109,10 +117,43 @@ function soundForEvent(e) {
 // --- 타임어택 기록 처리 ---
 function handleRecords(e) {
   if (e.type === 'stage-clear') {
-    _newRecord = saveBest(e.stage, e.time);
+    const prevBest = getBest(e.stage);       // 저장 전 기존 최고기록
+    _newRecord = saveBest(e.stage, e.time);  // 갱신되면 true
+    showResultScreen(e.stage, e.time, prevBest, _newRecord);
   } else if (e.type === 'mission') {
     refreshRecord(e.stage); // 새 스테이지 진입 시 그 스테이지 기록으로 갱신
   }
+}
+
+// --- 스테이지 클리어 결과 화면 ---
+function showResultScreen(stage, time, prevBest, isNewRecord) {
+  resultEls.title.textContent = `STAGE ${stage} CLEAR`;
+  resultEls.time.innerHTML = `${fmtTime(time)} <small>클리어</small>`;
+  resultEls.best.textContent = prevBest == null
+    ? '이 스테이지 최고기록: 첫 도전!'
+    : `이 스테이지 최고기록: ${fmtTime(prevBest)}`;
+
+  resultEls.delta.className = 'result-delta';
+  if (isNewRecord && prevBest != null) {
+    const saved = prevBest - time;
+    resultEls.delta.textContent = `🏆 신기록! (-${saved.toFixed(1)}s)`;
+    resultEls.delta.classList.add('record');
+  } else if (isNewRecord) {
+    resultEls.delta.textContent = '🏆 첫 기록 등록!';
+    resultEls.delta.classList.add('record');
+  } else {
+    const behind = time - prevBest;
+    resultEls.delta.textContent = `최고기록보다 +${behind.toFixed(1)}s`;
+    resultEls.delta.classList.add('slower');
+  }
+  resultOverlay.classList.remove('hidden');
+}
+
+if (resultEls.continue) {
+  resultEls.continue.onclick = () => {
+    resultOverlay.classList.add('hidden');
+    engine.continueToNextStage(); // 퍽 경계면 내부에서 퍽 오버레이를 띄운다
+  };
 }
 function soundForFx(fx) {
   if (fx.kind === 'destroy') {

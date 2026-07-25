@@ -141,6 +141,7 @@ console.log('\n[10] 엔진 상태머신: 유효 스왑이 매치->파괴->리필
   setBoard(engine.board, g);
   const a = engine.board.grid[4][4]; // BLUE
   const bTile = engine.board.grid[5][4]; // RED (아래 인접)
+  const movesBefore = engine.movesLeft;
   const ok = engine.requestSwap(a, bTile);
   assert(ok, '인접 스왑 요청 접수');
   // 여러 프레임 진행 (애니메이션 소요)
@@ -148,7 +149,7 @@ console.log('\n[10] 엔진 상태머신: 유효 스왑이 매치->파괴->리필
   for (let i = 0; i < 600; i++) { engine.update(1 / 30); states.add(engine.state); }
   assert(states.has('DESTROY'), 'DESTROY 상태를 거침');
   assert(events.includes('score'), '점수 이벤트 발생');
-  assert(engine.movesLeft < 25, '유효 스왑으로 이동 1 소비');
+  assert(engine.movesLeft === movesBefore - 1, '유효 스왑으로 이동 1 소비');
 }
 
 console.log('\n[11] 잘못된 스왑은 되돌아오고 이동을 소비하지 않는다');
@@ -232,7 +233,7 @@ console.log('\n[16] 엔진: 색상 수집 미션 진행 집계');
   assert(engine.mission.progress >= 3, `노랑 3개 수집 (progress=${engine.mission.progress})`);
 }
 
-console.log('\n[17] 미션 완료 시 다음 스테이지로 진행');
+console.log('\n[17] 미션 완료 -> 결과 대기 -> 계속 -> 다음 스테이지');
 {
   const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
   const startStage = engine.stage;
@@ -243,7 +244,48 @@ console.log('\n[17] 미션 완료 시 다음 스테이지로 진행');
   setBoard(engine.board, g);
   engine.requestSwap(engine.board.grid[4][4], engine.board.grid[5][4]);
   for (let i = 0; i < 400; i++) engine.update(1 / 30);
-  assert(engine.stage === startStage + 1, `스테이지 진행 ${startStage} -> ${engine.stage}`);
+  assert(engine.awaitingContinue === true, '클리어 후 결과 대기 상태(자동 진행 안 함)');
+  assert(engine.stage === startStage, '계속 누르기 전엔 스테이지 유지');
+  engine.continueToNextStage();
+  assert(engine.stage === startStage + 1, `계속 -> 스테이지 진행 ${startStage} -> ${engine.stage}`);
+  assert(engine.awaitingContinue === false, '진행 후 대기 해제');
+}
+
+console.log('\n[18] 스피드 시간 보너스: stageTime 되감기');
+{
+  const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
+  engine.stageTime = 10;
+  engine._applyTimeBonus(3, { row: 3, col: 3 });
+  assert(Math.abs(engine.stageTime - 7) < 1e-9, `10초 -> 3초 차감 -> ${engine.stageTime}`);
+  engine.stageTime = 1;
+  engine._applyTimeBonus(5, { row: 0, col: 0 });
+  assert(engine.stageTime === 0, '0 미만으로는 안 내려감(클램프)');
+}
+
+console.log('\n[19] 라이트볼 콤보 -> 시간 보너스 이벤트 발생');
+{
+  let maxBonus = 0;
+  const engine = new GameEngine({ onStateChange: () => {}, onEvent: (e) => { if (e.type === 'time-bonus') maxBonus = Math.max(maxBonus, e.seconds); }, onFx: () => {} });
+  engine.stageTime = 20;
+  setBoard(engine.board, uniformExcept());
+  const a = engine.board.grid[3][3], b = engine.board.grid[3][4];
+  a.special = SpecialType.LIGHT_BALL; b.special = SpecialType.LIGHT_BALL;
+  engine.requestSwap(a, b);
+  for (let i = 0; i < 60; i++) engine.update(1 / 30);
+  // 라이트볼 콤보는 3초 보너스 (이후 연쇄의 작은 보너스와 별개로 최댓값 확인)
+  assert(maxBonus >= 3, `콤보 시간 보너스 발생 (max ${maxBonus}s)`);
+}
+
+console.log('\n[20] 타이머 일시정지 시 시간이 흐르지 않음');
+{
+  const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
+  engine.stageTime = 0;
+  engine.setPaused(true);
+  for (let i = 0; i < 60; i++) engine.update(1 / 30);
+  assert(engine.stageTime === 0, '일시정지 중 stageTime 불변');
+  engine.setPaused(false);
+  engine.update(0.5);
+  assert(engine.stageTime > 0, '재개 후 시간 진행');
 }
 
 console.log(`\n===== 결과: ${pass} 통과 / ${fail} 실패 =====`);

@@ -58,6 +58,32 @@
     .perk-card:hover { border-color: var(--accent); transform: translateY(-4px); }
     .perk-card strong { font-size: 16px; color: var(--accent); }
     .perk-card span { font-size: 13px; opacity: .85; }
+    /* 스테이지 클리어 결과 화면 */
+    #result-overlay {
+      position: fixed; inset: 0; background: rgba(6,9,18,.88);
+      display: flex; align-items: center; justify-content: center; z-index: 11;
+    }
+    #result-overlay.hidden { display: none; }
+    .result-card {
+      background: var(--panel); border: 2px solid #2c3a63; border-radius: 18px;
+      padding: 32px 40px; text-align: center; display: flex; flex-direction: column;
+      gap: 14px; min-width: 280px; animation: pop .3s ease;
+    }
+    @keyframes pop { from { transform: scale(.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    .result-card h2 { margin: 0; color: var(--accent); letter-spacing: 1px; }
+    .result-time { font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .result-time small { font-size: 18px; opacity: .6; font-weight: 500; }
+    .result-best { font-size: 14px; opacity: .8; font-variant-numeric: tabular-nums; }
+    .result-delta { font-size: 16px; font-weight: 700; min-height: 22px; }
+    .result-delta.record { color: var(--accent); }
+    .result-delta.slower { color: #ff8a8a; }
+    .continue-btn {
+      margin-top: 8px; background: linear-gradient(90deg, #42d97a, #ffd23f);
+      border: none; color: #0d1220; font-weight: 800; font-size: 16px;
+      border-radius: 12px; padding: 14px 20px; cursor: pointer; transition: .15s;
+    }
+    .continue-btn:hover { filter: brightness(1.08); transform: translateY(-2px); }
+    @media (prefers-reduced-motion: reduce) { .result-card { animation: none; } }
   </style>
 </head>
 <body>
@@ -90,6 +116,16 @@
   <div id="perk-overlay" class="hidden">
     <h2>⚡ 퍽 선택 — 하나를 고르세요</h2>
     <div id="perk-choices"></div>
+  </div>
+
+  <div id="result-overlay" class="hidden">
+    <div class="result-card">
+      <h2 id="result-title">STAGE 1 CLEAR</h2>
+      <div class="result-time" id="result-time">0:00.0</div>
+      <div class="result-best" id="result-best">이 스테이지 최고기록: --</div>
+      <div class="result-delta" id="result-delta"></div>
+      <button id="result-continue" class="continue-btn">다음 스테이지 ▶</button>
+    </div>
   </div>
 
   <script type="module" src="./src/main.js"></script>

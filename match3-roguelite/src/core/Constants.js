@@ -89,11 +89,23 @@ export const TIMING = Object.freeze({
   REFILL: 0.20,
 });
 
-/** 스테이지 기본 설정 */
+/** 스테이지 기본 설정 (타임어택에 맞춰 튜닝) */
 export const STAGE_DEFAULTS = Object.freeze({
-  BASE_MOVES: 25,           // 기본 이동 횟수
+  BASE_MOVES: 30,           // 기본 이동 횟수 (랭킹이 시간이라 여유 있게)
   PERK_EVERY: 3,            // 몇 스테이지마다 퍽 선택을 띄울지
   REWARD_AD_MOVES: 5,       // 광고 보상 이동 횟수
+});
+
+/**
+ * 시간 보너스 (스피드런 요소): 특정 행동 시 스톱워치를 되감아
+ * 기록 시간을 줄여준다. 값(초)만큼 stageTime에서 차감.
+ */
+export const TIME_BONUS = Object.freeze({
+  CASCADE_STEP: 0.3,        // 연쇄 단계당 (2단부터)
+  SPECIAL_CREATE: 0.5,      // 특수타일 생성
+  COMBO_ROCKETBOMB: 2.0,    // 로켓+폭탄 콤보
+  COMBO_LIGHTBALL: 3.0,     // 라이트볼+라이트볼 콤보
+  COMBO_OTHER: 1.5,         // 그 외 특수 콤보
 });
 
 /** 점수 규칙 */

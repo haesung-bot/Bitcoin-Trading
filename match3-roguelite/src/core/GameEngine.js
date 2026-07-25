@@ -9,7 +9,7 @@
 //    CHECK_GAME_OVER ──> IDLE(계속) 또는 게임종료 콜백
 // =============================================================
 
-import { GameState, SpecialType, STAGE_DEFAULTS, SCORE, TIMING, MissionType } from './Constants.js';
+import { GameState, SpecialType, STAGE_DEFAULTS, SCORE, TIMING, MissionType, TIME_BONUS } from './Constants.js';
 import { Board } from './Board.js';
 import { StateMachine } from './StateMachine.js';
 import { MatchDetector } from './MatchDetector.js';
@@ -37,6 +37,8 @@ export class GameEngine {
     // --- 타임 어택 (랭킹 기준) ---
     this.stageTime = 0;      // 현재 스테이지 경과 시간(초) — 빠를수록 상위 랭크
     this.paused = false;     // 퍽 선택/팝업 중 타이머 정지
+    this.awaitingContinue = false; // 클리어 결과 화면에서 '계속' 대기 중
+    this._lastClearTime = 0; // 직전 스테이지 클리어 소요 시간
 
     // 퍽(패시브) 효과 누적치 — PerkSystem이 채운다
     this.perks = {
@@ -190,6 +192,12 @@ export class GameEngine {
             this._emit({ type: 'perk-extra-move', amount: this.perks.extraMoveOn4 });
           }
 
+          // 4-2) 스피드 보너스: 깊은 연쇄 + 특수타일 생성 시 시간 되감기
+          let bonus = 0;
+          if (this.cascadeLevel >= 2) bonus += TIME_BONUS.CASCADE_STEP * (this.cascadeLevel - 1);
+          if ((m.spawns || []).length > 0) bonus += TIME_BONUS.SPECIAL_CREATE;
+          if (bonus > 0) this._applyTimeBonus(bonus, cells);
+
           // 5) 연출 이벤트 방출
           this._emitFx({
             kind: 'destroy',
@@ -270,9 +278,10 @@ export class GameEngine {
 
   get state() { return this.fsm.current; }
 
-  /** IDLE 상태에서만 플레이어 스왑을 받는다 */
+  /** IDLE 상태에서만 플레이어 스왑을 받는다 (결과화면/일시정지 중엔 거부) */
   canAcceptInput() {
-    return this.fsm.is(GameState.IDLE) && !this.gameOver && !this.board.isAnimating();
+    return this.fsm.is(GameState.IDLE) && !this.gameOver
+      && !this.awaitingContinue && !this.paused && !this.board.isAnimating();
   }
 
   /**
@@ -370,6 +379,26 @@ export class GameEngine {
     return jellyCleared;
   }
 
+  /**
+   * 스피드 보너스: stageTime을 seconds 만큼 되감아 기록을 줄여준다.
+   * @param {number} seconds 차감할 시간(초, 양수)
+   * @param {Set<string>|{row,col}} where 연출 표시 위치 (셀 집합 또는 좌표)
+   */
+  _applyTimeBonus(seconds, where) {
+    if (seconds <= 0) return;
+    this.stageTime = Math.max(0, this.stageTime - seconds);
+    let pos;
+    if (where instanceof Set) {
+      let sr = 0, sc = 0, n = 0;
+      for (const key of where) { const [r, c] = key.split(',').map(Number); sr += r; sc += c; n++; }
+      pos = n ? { row: sr / n, col: sc / n } : { row: 3.5, col: 3.5 };
+    } else {
+      pos = where || { row: 3.5, col: 3.5 };
+    }
+    this._emit({ type: 'time-bonus', seconds });
+    this._emitFx({ kind: 'timebonus', at: pos, seconds });
+  }
+
   /** 파괴 직전 셀들의 위치/색을 스냅샷 (특수타일로 대체되는 칸은 제외) */
   _snapshotCells(cells, spawns) {
     const spawnKeys = new Set(spawns.map(s => `${s.row},${s.col}`));
@@ -416,6 +445,10 @@ export class GameEngine {
     }
 
     this._consumeMove();
+    // 콤보 스피드 보너스 (조합별 차등)
+    const comboBonus = bothLightBall ? TIME_BONUS.COMBO_LIGHTBALL
+      : rocketBomb ? TIME_BONUS.COMBO_ROCKETBOMB : TIME_BONUS.COMBO_OTHER;
+    this._applyTimeBonus(comboBonus, { row: a.row, col: a.col });
     const fxSpecials = [];
     const expanded = this._expandSpecials(cells, fxSpecials);
     const gained = this._awardScore(expanded.size);
@@ -446,7 +479,12 @@ export class GameEngine {
 
   _onStageClear() {
     const cleared = this.stage;
-    // 클리어에 걸린 시간(초)을 함께 알림 -> 랭킹/기록에 사용
+    this._lastClearTime = this.stageTime;
+    // 결과 화면을 위해 진행을 멈추고 '계속' 입력을 기다린다 (타이머 정지)
+    this.awaitingContinue = true;
+    this.paused = true;
+
+    // 클리어에 걸린 시간(초)을 함께 알림 -> 랭킹/기록/결과화면에 사용
     this._emit({ type: 'stage-clear', stage: cleared, time: this.stageTime });
     if (this.hooks.onStageClear) this.hooks.onStageClear(cleared, this.stageTime);
 
@@ -454,14 +492,26 @@ export class GameEngine {
     if (cleared % 3 === 0 && this.hooks.onInterstitialCheck) {
       this.hooks.onInterstitialCheck(cleared);
     }
-    // 스펙 #4: 3스테이지마다 퍽 선택
-    if (cleared % STAGE_DEFAULTS.PERK_EVERY === 0 && this.hooks.onPerkSelection) {
-      this.hooks.onPerkSelection(cleared);
-    }
+    // 다음 스테이지 준비는 continueToNextStage()에서 (결과 화면 '계속' 클릭 후)
+  }
 
-    // 다음 스테이지 준비 (미션 재생성 + 젤리 시딩 포함)
+  /**
+   * 결과 화면에서 '계속'을 눌렀을 때 호출. 다음 스테이지로 진행한다.
+   * 퍽 경계(3스테이지)면 퍽 선택 UI를 띄우고, 그 외엔 타이머를 재개한다.
+   */
+  continueToNextStage() {
+    if (!this.awaitingContinue) return;
+    this.awaitingContinue = false;
+    const cleared = this.stage;
     this.stage++;
-    this._startStage();
+    this._startStage(); // 미션 재생성 + 젤리 + 타이머 리셋 (paused 유지)
+
+    if (cleared % STAGE_DEFAULTS.PERK_EVERY === 0 && this.hooks.onPerkSelection) {
+      // 퍽 선택 중에는 계속 정지; 선택 완료 시 UI가 setPaused(false) 호출
+      this.hooks.onPerkSelection(cleared);
+    } else {
+      this.paused = false; // 곧바로 다음 스테이지 타이머 시작
+    }
   }
 
   _onOutOfMoves() {

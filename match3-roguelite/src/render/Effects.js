@@ -32,6 +32,17 @@ export class Effects {
     if (fx.kind === 'destroy') this._onDestroy(fx);
     else if (fx.kind === 'combo') this._onCombo(fx);
     else if (fx.kind === 'jelly') this._onJelly(fx);
+    else if (fx.kind === 'timebonus') this._onTimeBonus(fx);
+  }
+
+  /** 스피드 시간 보너스: 초록 "-X.Xs" 텍스트가 떠오름 */
+  _onTimeBonus(fx) {
+    const x = cellCenterX(fx.at.col);
+    const y = cellCenterY(fx.at.row) - TILE_SIZE * 0.5;
+    this.floaters.push({
+      x, y, text: `-${fx.seconds.toFixed(1)}s`,
+      vy: -40, life: 1.0, max: 1.0, size: 22, color: '#42d97a',
+    });
   }
 
   /** 젤리 파괴: 얼음빛 파편 튐 */

@@ -19,20 +19,21 @@ export class MissionSystem {
   static forStage(stage) {
     const cycle = (stage - 1) % 3;
 
+    // 타임어택 튜닝: 빠르게 깨고 넘어가도록 초반 목표를 낮춤
     if (cycle === 0) {
-      const target = 1000 + (stage - 1) * 400;
+      const target = 800 + (stage - 1) * 350;
       return { type: MissionType.SCORE, target, progress: 0, label: `점수 ${target} 달성` };
     }
     if (cycle === 1) {
       const color = ACTIVE_COLORS[(Math.random() * ACTIVE_COLORS.length) | 0];
-      const target = 20 + Math.floor(stage / 3) * 6;
+      const target = 15 + Math.floor(stage / 3) * 5;
       return {
         type: MissionType.COLLECT, color, target, progress: 0,
         label: `${COLOR_NAME[color]} 타일 ${target}개 수집`,
       };
     }
     // JELLY
-    const target = 8 + Math.floor(stage / 3) * 4;
+    const target = 6 + Math.floor(stage / 3) * 3;
     return {
       type: MissionType.JELLY, target, progress: 0, seedJelly: target,
       label: `젤리 ${target}개 제거`,
