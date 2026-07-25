@@ -36,19 +36,6 @@ export class AdInterface {
   }
 
   /**
-   * 하트 소진 -> 하트 리필 보상형 광고 팝업.
-   * @returns {Promise<boolean>}
-   */
-  async onHeartEmpty() {
-    const rewarded = await this.provider.showRewarded('heart_refill');
-    if (rewarded) {
-      this.engine.grantHeartRefill();
-      return true;
-    }
-    return false;
-  }
-
-  /**
    * 스테이지 클리어 -> 3의 배수 스테이지에서 전면광고.
    * @param {number} stageNum
    */

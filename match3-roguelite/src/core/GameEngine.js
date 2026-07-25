@@ -18,9 +18,8 @@ import { MissionSystem } from '../systems/MissionSystem.js';
 export class GameEngine {
   /**
    * @param {Object} hooks 외부 콜백(광고/퍽/UI 연동)
-   * @param {(n:number)=>void} [hooks.onStageClear]
+   * @param {(n:number,time:number)=>void} [hooks.onStageClear]
    * @param {()=>void}         [hooks.onOutOfMoves]
-   * @param {()=>void}         [hooks.onHeartEmpty]
    * @param {(choices:any[])=>void} [hooks.onPerkSelection]
    * @param {(state:string)=>void}  [hooks.onStateChange]
    * @param {(e:object)=>void}      [hooks.onEvent] 점수/연쇄 등 UI 이벤트
@@ -31,10 +30,13 @@ export class GameEngine {
 
     // --- 진행 상태 ---
     this.stage = 1;
-    this.hearts = STAGE_DEFAULTS.MAX_HEARTS;
     this.score = 0;
     this.cascadeLevel = 0;   // 연쇄 단계 (점수 배율)
     this.gameOver = false;
+
+    // --- 타임 어택 (랭킹 기준) ---
+    this.stageTime = 0;      // 현재 스테이지 경과 시간(초) — 빠를수록 상위 랭크
+    this.paused = false;     // 퍽 선택/팝업 중 타이머 정지
 
     // 퍽(패시브) 효과 누적치 — PerkSystem이 채운다
     this.perks = {
@@ -56,11 +58,12 @@ export class GameEngine {
     this._buildStateMachine();
   }
 
-  /** 새 스테이지 준비: 보드 리셋 + 미션 생성 + 젤리 시딩 + 이동 초기화 */
+  /** 새 스테이지 준비: 보드 리셋 + 미션 생성 + 젤리 시딩 + 이동/타이머 초기화 */
   _startStage() {
     this.board.reset();
     this.score = 0;
     this.cascadeLevel = 0;
+    this.stageTime = 0;      // 스테이지마다 스톱워치 리셋
     this.movesLeft = STAGE_DEFAULTS.BASE_MOVES + (this.perks._startMovesBonus || 0);
     this.mission = MissionSystem.forStage(this.stage);
     if (this.mission.seedJelly) this.board.seedJelly(this.mission.seedJelly);
@@ -255,8 +258,15 @@ export class GameEngine {
   /** 매 프레임 갱신 (렌더 루프에서 호출) */
   update(dt) {
     this.board.update(dt);
-    if (!this.gameOver) this.fsm.update(dt);
+    if (!this.gameOver) {
+      // 타임어택 스톱워치 (일시정지/게임오버가 아닐 때만 진행)
+      if (!this.paused) this.stageTime += dt;
+      this.fsm.update(dt);
+    }
   }
+
+  /** 타이머 일시정지/재개 (퍽 선택 등 팝업 중) */
+  setPaused(p) { this.paused = p; }
 
   get state() { return this.fsm.current; }
 
@@ -282,12 +292,6 @@ export class GameEngine {
     this.movesLeft += n;
     this.gameOver = false;
     this._emit({ type: 'reward-moves', amount: n });
-  }
-
-  /** 광고 보상: 하트 리필 */
-  grantHeartRefill() {
-    this.hearts = STAGE_DEFAULTS.MAX_HEARTS;
-    this._emit({ type: 'heart-refill' });
   }
 
   /** 퍽 적용 (PerkSystem이 선택 결과를 넘겨줌) */
@@ -442,8 +446,9 @@ export class GameEngine {
 
   _onStageClear() {
     const cleared = this.stage;
-    this._emit({ type: 'stage-clear', stage: cleared });
-    if (this.hooks.onStageClear) this.hooks.onStageClear(cleared);
+    // 클리어에 걸린 시간(초)을 함께 알림 -> 랭킹/기록에 사용
+    this._emit({ type: 'stage-clear', stage: cleared, time: this.stageTime });
+    if (this.hooks.onStageClear) this.hooks.onStageClear(cleared, this.stageTime);
 
     // 스펙 #5: 3스테이지마다 전면광고 체크
     if (cleared % 3 === 0 && this.hooks.onInterstitialCheck) {

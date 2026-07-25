@@ -94,7 +94,6 @@ export const STAGE_DEFAULTS = Object.freeze({
   BASE_MOVES: 25,           // 기본 이동 횟수
   PERK_EVERY: 3,            // 몇 스테이지마다 퍽 선택을 띄울지
   REWARD_AD_MOVES: 5,       // 광고 보상 이동 횟수
-  MAX_HEARTS: 5,            // 최대 하트(라이프)
 });
 
 /** 점수 규칙 */
