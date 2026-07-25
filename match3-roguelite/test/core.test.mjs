@@ -2,8 +2,9 @@
 import { Board } from '../src/core/Board.js';
 import { MatchDetector } from '../src/core/MatchDetector.js';
 import { GameEngine } from '../src/core/GameEngine.js';
-import { TileColor, SpecialType, RocketDir } from '../src/core/Constants.js';
+import { TileColor, SpecialType, RocketDir, MissionType } from '../src/core/Constants.js';
 import { Tile } from '../src/core/Tile.js';
+import { MissionSystem } from '../src/systems/MissionSystem.js';
 
 let pass = 0, fail = 0;
 function assert(cond, msg) {
@@ -177,6 +178,72 @@ console.log('\n[12] 라이트볼+라이트볼 콤보 -> 보드 전체 제거');
   for (let i = 0; i < 100; i++) engine.update(1 / 30);
   // 보드가 리필되긴 하지만 콤보 이벤트로 대규모 제거가 일어났는지 점수로 확인
   assert(engine.score > 0, '라이트볼 콤보로 대량 제거 & 점수 발생');
+}
+
+console.log('\n[13] 미션 로테이션: 점수 -> 수집 -> 젤리');
+{
+  assert(MissionSystem.forStage(1).type === MissionType.SCORE, 'stage1 = SCORE');
+  assert(MissionSystem.forStage(2).type === MissionType.COLLECT, 'stage2 = COLLECT');
+  assert(MissionSystem.forStage(3).type === MissionType.JELLY, 'stage3 = JELLY');
+}
+
+console.log('\n[14] 젤리 시딩 & 제거로 카운트 감소');
+{
+  const b = new Board();
+  const n = b.seedJelly(10);
+  assert(n === 10 && b.countJelly() === 10, '젤리 10개 시딩됨');
+  // 젤리가 있는 아무 칸이나 찾아 제거
+  let cleared = false;
+  outer: for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++)
+    if (b.hasJelly(r, c)) { cleared = b.clearJellyAt(r, c); break outer; }
+  assert(cleared && b.countJelly() === 9, '젤리 1개 제거 -> 9개 남음');
+}
+
+console.log('\n[15] 엔진: 젤리 미션 스테이지에서 매치로 젤리 제거 & 진행 집계');
+{
+  const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
+  engine.stage = 3;
+  engine._startStage(); // 젤리 미션 재생성
+  assert(engine.mission.type === MissionType.JELLY, '스테이지3 젤리 미션');
+  const totalJelly = engine.board.countJelly();
+  assert(totalJelly > 0, '젤리가 실제로 심어짐');
+  // (4,2),(4,3) 색3 + (5,4) 색3 -> (4,4)로 3매치 유발, 그 칸들에 젤리 강제
+  const g = uniformExcept();
+  g[4][2] = TileColor.YELLOW; g[4][3] = TileColor.YELLOW; g[5][4] = TileColor.YELLOW; g[4][4] = TileColor.PURPLE;
+  setBoard(engine.board, g);
+  // 매치 나는 칸들에 젤리 배치
+  engine.board.jelly = Array.from({ length: 8 }, () => new Array(8).fill(0));
+  engine.board.jelly[4][2] = 1; engine.board.jelly[4][3] = 1; engine.board.jelly[4][4] = 1;
+  engine.mission = { type: MissionType.JELLY, target: 99, progress: 0, label: 'test' };
+  engine.requestSwap(engine.board.grid[4][4], engine.board.grid[5][4]);
+  for (let i = 0; i < 400; i++) engine.update(1 / 30);
+  assert(engine.mission.progress >= 3, `젤리 3칸 제거 진행 (progress=${engine.mission.progress})`);
+}
+
+console.log('\n[16] 엔진: 색상 수집 미션 진행 집계');
+{
+  const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
+  const g = uniformExcept();
+  g[4][2] = TileColor.YELLOW; g[4][3] = TileColor.YELLOW; g[5][4] = TileColor.YELLOW; g[4][4] = TileColor.PURPLE;
+  setBoard(engine.board, g);
+  engine.mission = { type: MissionType.COLLECT, color: TileColor.YELLOW, target: 99, progress: 0, label: 'test' };
+  engine.requestSwap(engine.board.grid[4][4], engine.board.grid[5][4]);
+  for (let i = 0; i < 120; i++) engine.update(1 / 30);
+  assert(engine.mission.progress >= 3, `노랑 3개 수집 (progress=${engine.mission.progress})`);
+}
+
+console.log('\n[17] 미션 완료 시 다음 스테이지로 진행');
+{
+  const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
+  const startStage = engine.stage;
+  // 점수 미션을 아주 낮게 만들어 한 번의 매치로 클리어되게
+  engine.mission = { type: MissionType.SCORE, target: 1, progress: 0, label: 'test' };
+  const g = uniformExcept();
+  g[4][2] = TileColor.YELLOW; g[4][3] = TileColor.YELLOW; g[5][4] = TileColor.YELLOW; g[4][4] = TileColor.PURPLE;
+  setBoard(engine.board, g);
+  engine.requestSwap(engine.board.grid[4][4], engine.board.grid[5][4]);
+  for (let i = 0; i < 400; i++) engine.update(1 / 30);
+  assert(engine.stage === startStage + 1, `스테이지 진행 ${startStage} -> ${engine.stage}`);
 }
 
 console.log(`\n===== 결과: ${pass} 통과 / ${fail} 실패 =====`);

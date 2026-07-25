@@ -12,10 +12,12 @@ export class Board {
   constructor() {
     /** @type {(Tile|null)[][]} grid[row][col] */
     this.grid = [];
+    /** @type {number[][]} 젤리(장애물) 레벨. 0=없음, 1이상=덮여있음 */
+    this.jelly = [];
     this.reset();
   }
 
-  /** 초기 매치가 없는 보드를 새로 생성 */
+  /** 초기 매치가 없는 보드를 새로 생성 (젤리도 초기화) */
   reset() {
     do {
       this.grid = [];
@@ -27,6 +29,45 @@ export class Board {
         this.grid.push(row);
       }
     } while (MatchDetector.hasAnyMatch(this)); // 시작부터 매치가 있으면 재생성
+    this.jelly = Array.from({ length: BOARD_ROWS }, () => new Array(BOARD_COLS).fill(0));
+  }
+
+  /**
+   * 젤리를 무작위 칸에 심는다 (미션: 젤리 제거용).
+   * @param {number} count 심을 젤리 수
+   * @returns {number} 실제로 심은 개수
+   */
+  seedJelly(count) {
+    const cells = [];
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++) cells.push([r, c]);
+    // 셔플
+    for (let i = cells.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      [cells[i], cells[j]] = [cells[j], cells[i]];
+    }
+    const n = Math.min(count, cells.length);
+    for (let i = 0; i < n; i++) {
+      const [r, c] = cells[i];
+      this.jelly[r][c] = 1;
+    }
+    return n;
+  }
+
+  hasJelly(r, c) { return this.inBounds(r, c) && this.jelly[r][c] > 0; }
+
+  /** 해당 칸의 젤리를 한 겹 제거. @returns {boolean} 실제로 제거했으면 true */
+  clearJellyAt(r, c) {
+    if (this.hasJelly(r, c)) { this.jelly[r][c]--; return true; }
+    return false;
+  }
+
+  /** 남은 젤리 총량 */
+  countJelly() {
+    let n = 0;
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++) n += this.jelly[r][c] > 0 ? 1 : 0;
+    return n;
   }
 
   _randColor() {
@@ -148,11 +189,34 @@ export class Board {
     return affected;
   }
 
-  /** 프로펠러가 유도할 목표: 미션 좌표가 있으면 그곳, 없으면 임의 타일 */
+  /**
+   * 프로펠러가 유도할 목표 우선순위:
+   *   1) 명시된 미션 좌표
+   *   2) 남아있는 젤리 칸 (미션 젤리 제거 지원)
+   *   3) 미션 색 타일
+   *   4) 임의 타일
+   */
   _propellerTarget(ctx) {
     if (ctx.missionRow != null && ctx.missionCol != null) {
       return { row: ctx.missionRow, col: ctx.missionCol };
     }
+    // 젤리 우선
+    const jellyCells = [];
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++)
+        if (this.jelly[r][c] > 0) jellyCells.push({ row: r, col: c });
+    if (jellyCells.length) return jellyCells[(Math.random() * jellyCells.length) | 0];
+
+    // 미션 색 타일
+    if (ctx.missionColor != null) {
+      const colorCells = [];
+      for (let r = 0; r < BOARD_ROWS; r++)
+        for (let c = 0; c < BOARD_COLS; c++)
+          if (this.grid[r][c] && this.grid[r][c].color === ctx.missionColor)
+            colorCells.push({ row: r, col: c });
+      if (colorCells.length) return colorCells[(Math.random() * colorCells.length) | 0];
+    }
+
     const candidates = [];
     for (let r = 0; r < BOARD_ROWS; r++)
       for (let c = 0; c < BOARD_COLS; c++)

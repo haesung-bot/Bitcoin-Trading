@@ -9,10 +9,11 @@
 //    CHECK_GAME_OVER ──> IDLE(계속) 또는 게임종료 콜백
 // =============================================================
 
-import { GameState, SpecialType, STAGE_DEFAULTS, SCORE, TIMING } from './Constants.js';
+import { GameState, SpecialType, STAGE_DEFAULTS, SCORE, TIMING, MissionType } from './Constants.js';
 import { Board } from './Board.js';
 import { StateMachine } from './StateMachine.js';
 import { MatchDetector } from './MatchDetector.js';
+import { MissionSystem } from '../systems/MissionSystem.js';
 
 export class GameEngine {
   /**
@@ -30,10 +31,8 @@ export class GameEngine {
 
     // --- 진행 상태 ---
     this.stage = 1;
-    this.movesLeft = STAGE_DEFAULTS.BASE_MOVES;
     this.hearts = STAGE_DEFAULTS.MAX_HEARTS;
     this.score = 0;
-    this.targetScore = this._computeTargetScore(this.stage);
     this.cascadeLevel = 0;   // 연쇄 단계 (점수 배율)
     this.gameOver = false;
 
@@ -42,6 +41,7 @@ export class GameEngine {
       bombRangeBonus: 0,     // +N (3x3 -> (3+2N)x(3+2N) 식으로 확장 가능)
       extraMoveOn4: 0,       // 4콤보 생성 시 이동 +N
       scoreMultiplier: 1,
+      _startMovesBonus: 0,   // 스테이지 시작 이동 보너스
     };
 
     // --- 스왑/연쇄 처리용 임시 상태 ---
@@ -49,7 +49,35 @@ export class GameEngine {
     this._revertSwap = null;
     this._lastMatch = null;
 
+    // 미션 & 이동 초기화 (보드/젤리 세팅 포함)
+    this.mission = null;
+    this._startStage();
+
     this._buildStateMachine();
+  }
+
+  /** 새 스테이지 준비: 보드 리셋 + 미션 생성 + 젤리 시딩 + 이동 초기화 */
+  _startStage() {
+    this.board.reset();
+    this.score = 0;
+    this.cascadeLevel = 0;
+    this.movesLeft = STAGE_DEFAULTS.BASE_MOVES + (this.perks._startMovesBonus || 0);
+    this.mission = MissionSystem.forStage(this.stage);
+    if (this.mission.seedJelly) this.board.seedJelly(this.mission.seedJelly);
+    this._syncMissionProgress();
+    this._emit({ type: 'mission', mission: this.mission, stage: this.stage });
+  }
+
+  /** 미션 진행도를 현재 보드 상태에 맞춰 동기화 */
+  _syncMissionProgress() {
+    if (!this.mission) return;
+    if (this.mission.type === MissionType.SCORE) {
+      this.mission.progress = this.score;
+    } else if (this.mission.type === MissionType.JELLY) {
+      // 진행도 = 처음 심은 젤리 - 남은 젤리
+      this.mission.progress = this.mission.target - this.board.countJelly();
+    }
+    // COLLECT 는 파괴 시점에 누적되므로 여기서 손대지 않음
   }
 
   // ---------------------------------------------------------
@@ -77,6 +105,7 @@ export class GameEngine {
           this.board.swapLogical(a, b);
           a.moveTo(a.row, a.col, TIMING.SWAP);
           b.moveTo(b.row, b.col, TIMING.SWAP);
+          this._emit({ type: 'swap' });
         },
         update: () => {
           if (this.board.isAnimating()) return null;
@@ -121,6 +150,7 @@ export class GameEngine {
             this.board.swapLogical(a, b);
             a.moveTo(a.row, a.col, TIMING.SWAP_BACK);
             b.moveTo(b.row, b.col, TIMING.SWAP_BACK);
+            this._emit({ type: 'invalid-swap' });
             return GameState.IDLE; // 되돌린 뒤 대기
           }
           // 연쇄 종료 -> 게임오버/클리어 판정
@@ -148,6 +178,9 @@ export class GameEngine {
           // 4) 제거 + 특수타일 스폰
           this.board.destroyCells(cells, m.spawns || []);
 
+          // 4-1) 미션 진행 집계 (젤리 제거 / 색 수집 / 점수)
+          const jellyCleared = this._processClears(cells, destroyed);
+
           // 4콤보(로켓급) 생성 시 퍽 보너스 이동
           if ((m.spawns || []).some(s => s.type === SpecialType.ROCKET) && this.perks.extraMoveOn4 > 0) {
             this.movesLeft += this.perks.extraMoveOn4;
@@ -162,6 +195,7 @@ export class GameEngine {
             spawns: m.spawns || [],
             cascade: this.cascadeLevel,
             score: gained,
+            jellyCleared,
           });
 
           this._lastMatch = null;
@@ -194,7 +228,7 @@ export class GameEngine {
       // --- 클리어 / 게임오버 판정 ---
       [S.CHECK_GAME_OVER]: {
         enter: () => {
-          if (this.score >= this.targetScore) {
+          if (MissionSystem.isComplete(this.mission)) {
             this._onStageClear();
           } else if (this.movesLeft <= 0) {
             this._onOutOfMoves();
@@ -293,7 +327,8 @@ export class GameEngine {
       activated.add(t.id);
       // 연출용: 발동 순간의 특수타일 위치/종류 기록
       if (fxOut) fxOut.push({ type: t.special, row: t.row, col: t.col, rocketDir: t.rocketDir, color: t.color });
-      const affected = this.board.activateSpecial(t);
+      // 프로펠러 유도 목표로 미션 색을 넘긴다 (젤리 > 미션색 > 임의 순)
+      const affected = this.board.activateSpecial(t, { missionColor: this.mission ? this.mission.color : null });
       for (const key of affected) {
         result.add(key);
         const [r, c] = key.split(',').map(Number);
@@ -302,6 +337,33 @@ export class GameEngine {
       }
     }
     return result;
+  }
+
+  /**
+   * 파괴된 셀에서 미션 진행을 집계한다 (젤리 제거 / 색 수집 / 점수).
+   * @param {Set<string>} cells 제거된 셀
+   * @param {Array<{row,col,color}>} destroyedTiles 파괴된 타일 스냅샷
+   * @returns {number} 이번에 제거된 젤리 수
+   */
+  _processClears(cells, destroyedTiles) {
+    let jellyCleared = 0;
+    const jellyPos = [];
+    for (const key of cells) {
+      const [r, c] = key.split(',').map(Number);
+      if (this.board.clearJellyAt(r, c)) { jellyCleared++; jellyPos.push({ row: r, col: c }); }
+    }
+    if (this.mission) {
+      if (this.mission.type === MissionType.JELLY) {
+        this.mission.progress += jellyCleared;
+      } else if (this.mission.type === MissionType.COLLECT) {
+        for (const t of destroyedTiles) if (t.color === this.mission.color) this.mission.progress++;
+      } else if (this.mission.type === MissionType.SCORE) {
+        this.mission.progress = this.score;
+      }
+      this._emit({ type: 'mission-progress', mission: this.mission });
+    }
+    if (jellyCleared) this._emitFx({ kind: 'jelly', cells: jellyPos });
+    return jellyCleared;
   }
 
   /** 파괴 직전 셀들의 위치/색을 스냅샷 (특수타일로 대체되는 칸은 제외) */
@@ -355,6 +417,7 @@ export class GameEngine {
     const gained = this._awardScore(expanded.size);
     const destroyed = this._snapshotCells(expanded, []);
     this.board.destroyCells(expanded, []);
+    this._processClears(expanded, destroyed);
     this._lastMatch = null;
     this._emit({ type: 'combo', combo: types.join('+'), cleared: expanded.size });
     // 콤보는 강력한 연출: 대형 화면 흔들림 + 발동 지점 표시
@@ -377,11 +440,6 @@ export class GameEngine {
     return gained;
   }
 
-  _computeTargetScore(stage) {
-    // 스테이지가 올라갈수록 목표 점수 증가
-    return 1000 + (stage - 1) * 600;
-  }
-
   _onStageClear() {
     const cleared = this.stage;
     this._emit({ type: 'stage-clear', stage: cleared });
@@ -396,12 +454,9 @@ export class GameEngine {
       this.hooks.onPerkSelection(cleared);
     }
 
-    // 다음 스테이지 준비
+    // 다음 스테이지 준비 (미션 재생성 + 젤리 시딩 포함)
     this.stage++;
-    this.movesLeft = STAGE_DEFAULTS.BASE_MOVES;
-    this.score = 0;
-    this.targetScore = this._computeTargetScore(this.stage);
-    this.board.reset();
+    this._startStage();
   }
 
   _onOutOfMoves() {

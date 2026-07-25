@@ -102,3 +102,34 @@ export const SCORE = Object.freeze({
   PER_TILE: 10,
   CASCADE_BONUS: 5, // 연쇄 단계마다 타일당 추가 점수
 });
+
+/**
+ * 미션(스테이지 목표) 종류. 스펙 #2의 프로펠러 "목표 유도"가 이걸로 구체화된다.
+ *  - SCORE   : 목표 점수 도달
+ *  - COLLECT : 특정 색 타일 N개 수집
+ *  - JELLY   : 젤리(장애물) N개 제거
+ */
+export const MissionType = Object.freeze({
+  SCORE: 'SCORE',
+  COLLECT: 'COLLECT',
+  JELLY: 'JELLY',
+});
+
+/** 젤리 오버레이 색 (반투명으로 타일 위에 덮인다) */
+export const JELLY_HEX = 'rgba(180, 240, 255, 0.55)';
+
+/**
+ * 연출 튜닝 — 세기/개수를 여기서 한 번에 조절.
+ * 값을 키우면 화려하게, 줄이면 차분하게.
+ */
+export const FX = Object.freeze({
+  GLOBAL_INTENSITY: 0.85,   // 전역 배율 (0~1.5 권장). 과하면 낮추기
+  BURST_BASE: 7,            // 일반 타일 파괴 시 파편 수
+  BURST_CASCADE: 10,        // 연쇄 중 파편 수
+  SHAKE_BOMB: 8,
+  SHAKE_ROCKET: 5,
+  SHAKE_LIGHTBALL: 7,
+  SHAKE_COMBO_ROCKETBOMB: 12,
+  SHAKE_COMBO_LIGHTBALL: 14,
+  SHAKE_CASCADE_STEP: 2.5,  // 연쇄 단계당 흔들림 증가
+});

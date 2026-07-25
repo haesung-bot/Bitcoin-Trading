@@ -5,7 +5,7 @@
 
 import {
   BOARD_ROWS, BOARD_COLS, TILE_SIZE, BOARD_PADDING,
-  COLOR_HEX, SpecialType, RocketDir,
+  COLOR_HEX, SpecialType, RocketDir, JELLY_HEX,
 } from '../core/Constants.js';
 
 export class Renderer {
@@ -50,6 +50,16 @@ export class Renderer {
       for (let c = 0; c < BOARD_COLS; c++) {
         const t = this.engine.board.grid[r][c];
         if (t) this._drawTile(t);
+      }
+    }
+
+    // 젤리(장애물) 오버레이 — 타일 위에 반투명으로 덮인다
+    const jelly = this.engine.board.jelly;
+    if (jelly) {
+      for (let r = 0; r < BOARD_ROWS; r++) {
+        for (let c = 0; c < BOARD_COLS; c++) {
+          if (jelly[r][c] > 0) this._drawJelly(r, c);
+        }
       }
     }
 
@@ -135,6 +145,23 @@ export class Renderer {
     }
   }
 }
+
+Renderer.prototype._drawJelly = function (row, col) {
+  const ctx = this.ctx;
+  const x = BOARD_PADDING + col * TILE_SIZE;
+  const y = BOARD_PADDING + row * TILE_SIZE;
+  const pad = 3;
+  ctx.save();
+  ctx.fillStyle = JELLY_HEX;
+  roundRect(ctx, x + pad, y + pad, TILE_SIZE - pad * 2, TILE_SIZE - pad * 2, 12);
+  ctx.fill();
+  // 반짝이는 테두리로 '얼음/젤리' 질감
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, x + pad, y + pad, TILE_SIZE - pad * 2, TILE_SIZE - pad * 2, 12);
+  ctx.stroke();
+  ctx.restore();
+};
 
 function roundRect(ctx, x, y, w, h, r) {
   r = Math.min(r, w / 2, h / 2);

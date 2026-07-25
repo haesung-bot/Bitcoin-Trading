@@ -16,6 +16,20 @@
     .hud b { color: var(--accent); font-size: 18px; }
     .stat { text-align: center; }
     .stat small { display: block; opacity: .6; font-size: 11px; text-transform: uppercase; }
+    /* 미션 패널 */
+    .mission {
+      background: var(--panel); padding: 12px 20px; border-radius: 12px;
+      width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .mission-top { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+    .mission-dot { width: 14px; height: 14px; border-radius: 50%; display: none; flex: none; box-shadow: 0 0 6px rgba(255,255,255,.4); }
+    .mission-top .label { flex: 1; font-weight: 600; }
+    .mission-top .count { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .mission-track { height: 8px; background: #0d1220; border-radius: 6px; overflow: hidden; }
+    .mission-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #42d97a, #ffd23f); border-radius: 6px; transition: width .25s ease; }
+    .toolbar { display: flex; gap: 10px; align-items: center; width: 100%; max-width: 420px; justify-content: flex-end; }
+    .icon-btn { background: var(--panel); border: none; color: #e8ecf7; border-radius: 10px; padding: 8px 12px; font-size: 18px; cursor: pointer; }
+    .icon-btn:hover { background: #232e52; }
     #game { border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.5); touch-action: none; }
     #log { font-size: 12px; opacity: .8; min-height: 40px; width: 100%; max-width: 420px; }
     #log div { padding: 2px 0; }
@@ -42,8 +56,21 @@
   <div class="hud">
     <div class="stat"><small>Stage</small><b id="stage">1</b></div>
     <div class="stat"><small>Moves</small><b id="moves">25</b></div>
-    <div class="stat"><small>Score / Target</small><b><span id="score">0</span> / <span id="target">1000</span></b></div>
+    <div class="stat"><small>Score</small><b id="score">0</b></div>
     <div class="stat"><small>Hearts</small><b id="hearts">❤❤❤❤❤</b></div>
+  </div>
+
+  <div class="mission">
+    <div class="mission-top">
+      <span id="mission-dot" class="mission-dot"></span>
+      <span class="label" id="mission-label">목표 로딩중…</span>
+      <span class="count" id="mission-count">0 / 0</span>
+    </div>
+    <div class="mission-track"><div class="mission-fill" id="mission-bar"></div></div>
+  </div>
+
+  <div class="toolbar">
+    <button id="mute-btn" class="icon-btn" title="음소거 토글">🔊</button>
   </div>
 
   <canvas id="game"></canvas>
@@ -159,6 +186,37 @@ const STAGE_DEFAULTS = Object.freeze({
 const SCORE = Object.freeze({
   PER_TILE: 10,
   CASCADE_BONUS: 5, // 연쇄 단계마다 타일당 추가 점수
+});
+
+/**
+ * 미션(스테이지 목표) 종류. 스펙 #2의 프로펠러 "목표 유도"가 이걸로 구체화된다.
+ *  - SCORE   : 목표 점수 도달
+ *  - COLLECT : 특정 색 타일 N개 수집
+ *  - JELLY   : 젤리(장애물) N개 제거
+ */
+const MissionType = Object.freeze({
+  SCORE: 'SCORE',
+  COLLECT: 'COLLECT',
+  JELLY: 'JELLY',
+});
+
+/** 젤리 오버레이 색 (반투명으로 타일 위에 덮인다) */
+const JELLY_HEX = 'rgba(180, 240, 255, 0.55)';
+
+/**
+ * 연출 튜닝 — 세기/개수를 여기서 한 번에 조절.
+ * 값을 키우면 화려하게, 줄이면 차분하게.
+ */
+const FX = Object.freeze({
+  GLOBAL_INTENSITY: 0.85,   // 전역 배율 (0~1.5 권장). 과하면 낮추기
+  BURST_BASE: 7,            // 일반 타일 파괴 시 파편 수
+  BURST_CASCADE: 10,        // 연쇄 중 파편 수
+  SHAKE_BOMB: 8,
+  SHAKE_ROCKET: 5,
+  SHAKE_LIGHTBALL: 7,
+  SHAKE_COMBO_ROCKETBOMB: 12,
+  SHAKE_COMBO_LIGHTBALL: 14,
+  SHAKE_CASCADE_STEP: 2.5,  // 연쇄 단계당 흔들림 증가
 });
 
 
@@ -601,10 +659,12 @@ class Board {
   constructor() {
     /** @type {(Tile|null)[][]} grid[row][col] */
     this.grid = [];
+    /** @type {number[][]} 젤리(장애물) 레벨. 0=없음, 1이상=덮여있음 */
+    this.jelly = [];
     this.reset();
   }
 
-  /** 초기 매치가 없는 보드를 새로 생성 */
+  /** 초기 매치가 없는 보드를 새로 생성 (젤리도 초기화) */
   reset() {
     do {
       this.grid = [];
@@ -616,6 +676,45 @@ class Board {
         this.grid.push(row);
       }
     } while (MatchDetector.hasAnyMatch(this)); // 시작부터 매치가 있으면 재생성
+    this.jelly = Array.from({ length: BOARD_ROWS }, () => new Array(BOARD_COLS).fill(0));
+  }
+
+  /**
+   * 젤리를 무작위 칸에 심는다 (미션: 젤리 제거용).
+   * @param {number} count 심을 젤리 수
+   * @returns {number} 실제로 심은 개수
+   */
+  seedJelly(count) {
+    const cells = [];
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++) cells.push([r, c]);
+    // 셔플
+    for (let i = cells.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      [cells[i], cells[j]] = [cells[j], cells[i]];
+    }
+    const n = Math.min(count, cells.length);
+    for (let i = 0; i < n; i++) {
+      const [r, c] = cells[i];
+      this.jelly[r][c] = 1;
+    }
+    return n;
+  }
+
+  hasJelly(r, c) { return this.inBounds(r, c) && this.jelly[r][c] > 0; }
+
+  /** 해당 칸의 젤리를 한 겹 제거. @returns {boolean} 실제로 제거했으면 true */
+  clearJellyAt(r, c) {
+    if (this.hasJelly(r, c)) { this.jelly[r][c]--; return true; }
+    return false;
+  }
+
+  /** 남은 젤리 총량 */
+  countJelly() {
+    let n = 0;
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++) n += this.jelly[r][c] > 0 ? 1 : 0;
+    return n;
   }
 
   _randColor() {
@@ -737,11 +836,34 @@ class Board {
     return affected;
   }
 
-  /** 프로펠러가 유도할 목표: 미션 좌표가 있으면 그곳, 없으면 임의 타일 */
+  /**
+   * 프로펠러가 유도할 목표 우선순위:
+   *   1) 명시된 미션 좌표
+   *   2) 남아있는 젤리 칸 (미션 젤리 제거 지원)
+   *   3) 미션 색 타일
+   *   4) 임의 타일
+   */
   _propellerTarget(ctx) {
     if (ctx.missionRow != null && ctx.missionCol != null) {
       return { row: ctx.missionRow, col: ctx.missionCol };
     }
+    // 젤리 우선
+    const jellyCells = [];
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++)
+        if (this.jelly[r][c] > 0) jellyCells.push({ row: r, col: c });
+    if (jellyCells.length) return jellyCells[(Math.random() * jellyCells.length) | 0];
+
+    // 미션 색 타일
+    if (ctx.missionColor != null) {
+      const colorCells = [];
+      for (let r = 0; r < BOARD_ROWS; r++)
+        for (let c = 0; c < BOARD_COLS; c++)
+          if (this.grid[r][c] && this.grid[r][c].color === ctx.missionColor)
+            colorCells.push({ row: r, col: c });
+      if (colorCells.length) return colorCells[(Math.random() * colorCells.length) | 0];
+    }
+
     const candidates = [];
     for (let r = 0; r < BOARD_ROWS; r++)
       for (let c = 0; c < BOARD_COLS; c++)
@@ -853,6 +975,58 @@ class Board {
 }
 
 
+// ===== src/systems/MissionSystem.js =====
+// =============================================================
+//  MissionSystem.js  -  스테이지 목표(미션) 생성 & 진행 판정
+//  스펙 확장: 순수 점수 목표 -> 색상 수집 / 젤리 제거 등 다양화.
+// =============================================================
+
+const COLOR_NAME = {
+  0: '빨강', 1: '파랑', 2: '초록', 3: '노랑', 4: '보라', 5: '주황',
+};
+
+class MissionSystem {
+  /**
+   * 스테이지 번호로 미션을 만든다.
+   * 로테이션: 점수 -> 색상수집 -> 젤리 제거 반복하며 난이도 상승.
+   * @param {number} stage
+   * @returns {{type:string,target:number,progress:number,color?:number,label:string,seedJelly?:number}}
+   */
+  static forStage(stage) {
+    const cycle = (stage - 1) % 3;
+
+    if (cycle === 0) {
+      const target = 1000 + (stage - 1) * 400;
+      return { type: MissionType.SCORE, target, progress: 0, label: `점수 ${target} 달성` };
+    }
+    if (cycle === 1) {
+      const color = ACTIVE_COLORS[(Math.random() * ACTIVE_COLORS.length) | 0];
+      const target = 20 + Math.floor(stage / 3) * 6;
+      return {
+        type: MissionType.COLLECT, color, target, progress: 0,
+        label: `${COLOR_NAME[color]} 타일 ${target}개 수집`,
+      };
+    }
+    // JELLY
+    const target = 8 + Math.floor(stage / 3) * 4;
+    return {
+      type: MissionType.JELLY, target, progress: 0, seedJelly: target,
+      label: `젤리 ${target}개 제거`,
+    };
+  }
+
+  /** 미션 색의 hex (UI 표시용) */
+  static colorHex(mission) {
+    return mission.color != null ? COLOR_HEX[mission.color] : null;
+  }
+
+  /** 목표 달성 여부 */
+  static isComplete(mission) {
+    return mission.progress >= mission.target;
+  }
+}
+
+
 // ===== src/core/GameEngine.js =====
 // =============================================================
 //  GameEngine.js  -  코어 게임 엔진 (상태머신 오케스트레이션)
@@ -864,6 +1038,7 @@ class Board {
 //    DESTROY ──> GRAVITY_FALL ──> REFILL ──> MATCH_CHECK (연쇄 반복)
 //    CHECK_GAME_OVER ──> IDLE(계속) 또는 게임종료 콜백
 // =============================================================
+
 
 
 
@@ -884,10 +1059,8 @@ class GameEngine {
 
     // --- 진행 상태 ---
     this.stage = 1;
-    this.movesLeft = STAGE_DEFAULTS.BASE_MOVES;
     this.hearts = STAGE_DEFAULTS.MAX_HEARTS;
     this.score = 0;
-    this.targetScore = this._computeTargetScore(this.stage);
     this.cascadeLevel = 0;   // 연쇄 단계 (점수 배율)
     this.gameOver = false;
 
@@ -896,6 +1069,7 @@ class GameEngine {
       bombRangeBonus: 0,     // +N (3x3 -> (3+2N)x(3+2N) 식으로 확장 가능)
       extraMoveOn4: 0,       // 4콤보 생성 시 이동 +N
       scoreMultiplier: 1,
+      _startMovesBonus: 0,   // 스테이지 시작 이동 보너스
     };
 
     // --- 스왑/연쇄 처리용 임시 상태 ---
@@ -903,7 +1077,35 @@ class GameEngine {
     this._revertSwap = null;
     this._lastMatch = null;
 
+    // 미션 & 이동 초기화 (보드/젤리 세팅 포함)
+    this.mission = null;
+    this._startStage();
+
     this._buildStateMachine();
+  }
+
+  /** 새 스테이지 준비: 보드 리셋 + 미션 생성 + 젤리 시딩 + 이동 초기화 */
+  _startStage() {
+    this.board.reset();
+    this.score = 0;
+    this.cascadeLevel = 0;
+    this.movesLeft = STAGE_DEFAULTS.BASE_MOVES + (this.perks._startMovesBonus || 0);
+    this.mission = MissionSystem.forStage(this.stage);
+    if (this.mission.seedJelly) this.board.seedJelly(this.mission.seedJelly);
+    this._syncMissionProgress();
+    this._emit({ type: 'mission', mission: this.mission, stage: this.stage });
+  }
+
+  /** 미션 진행도를 현재 보드 상태에 맞춰 동기화 */
+  _syncMissionProgress() {
+    if (!this.mission) return;
+    if (this.mission.type === MissionType.SCORE) {
+      this.mission.progress = this.score;
+    } else if (this.mission.type === MissionType.JELLY) {
+      // 진행도 = 처음 심은 젤리 - 남은 젤리
+      this.mission.progress = this.mission.target - this.board.countJelly();
+    }
+    // COLLECT 는 파괴 시점에 누적되므로 여기서 손대지 않음
   }
 
   // ---------------------------------------------------------
@@ -931,6 +1133,7 @@ class GameEngine {
           this.board.swapLogical(a, b);
           a.moveTo(a.row, a.col, TIMING.SWAP);
           b.moveTo(b.row, b.col, TIMING.SWAP);
+          this._emit({ type: 'swap' });
         },
         update: () => {
           if (this.board.isAnimating()) return null;
@@ -975,6 +1178,7 @@ class GameEngine {
             this.board.swapLogical(a, b);
             a.moveTo(a.row, a.col, TIMING.SWAP_BACK);
             b.moveTo(b.row, b.col, TIMING.SWAP_BACK);
+            this._emit({ type: 'invalid-swap' });
             return GameState.IDLE; // 되돌린 뒤 대기
           }
           // 연쇄 종료 -> 게임오버/클리어 판정
@@ -1002,6 +1206,9 @@ class GameEngine {
           // 4) 제거 + 특수타일 스폰
           this.board.destroyCells(cells, m.spawns || []);
 
+          // 4-1) 미션 진행 집계 (젤리 제거 / 색 수집 / 점수)
+          const jellyCleared = this._processClears(cells, destroyed);
+
           // 4콤보(로켓급) 생성 시 퍽 보너스 이동
           if ((m.spawns || []).some(s => s.type === SpecialType.ROCKET) && this.perks.extraMoveOn4 > 0) {
             this.movesLeft += this.perks.extraMoveOn4;
@@ -1016,6 +1223,7 @@ class GameEngine {
             spawns: m.spawns || [],
             cascade: this.cascadeLevel,
             score: gained,
+            jellyCleared,
           });
 
           this._lastMatch = null;
@@ -1048,7 +1256,7 @@ class GameEngine {
       // --- 클리어 / 게임오버 판정 ---
       [S.CHECK_GAME_OVER]: {
         enter: () => {
-          if (this.score >= this.targetScore) {
+          if (MissionSystem.isComplete(this.mission)) {
             this._onStageClear();
           } else if (this.movesLeft <= 0) {
             this._onOutOfMoves();
@@ -1147,7 +1355,8 @@ class GameEngine {
       activated.add(t.id);
       // 연출용: 발동 순간의 특수타일 위치/종류 기록
       if (fxOut) fxOut.push({ type: t.special, row: t.row, col: t.col, rocketDir: t.rocketDir, color: t.color });
-      const affected = this.board.activateSpecial(t);
+      // 프로펠러 유도 목표로 미션 색을 넘긴다 (젤리 > 미션색 > 임의 순)
+      const affected = this.board.activateSpecial(t, { missionColor: this.mission ? this.mission.color : null });
       for (const key of affected) {
         result.add(key);
         const [r, c] = key.split(',').map(Number);
@@ -1156,6 +1365,33 @@ class GameEngine {
       }
     }
     return result;
+  }
+
+  /**
+   * 파괴된 셀에서 미션 진행을 집계한다 (젤리 제거 / 색 수집 / 점수).
+   * @param {Set<string>} cells 제거된 셀
+   * @param {Array<{row,col,color}>} destroyedTiles 파괴된 타일 스냅샷
+   * @returns {number} 이번에 제거된 젤리 수
+   */
+  _processClears(cells, destroyedTiles) {
+    let jellyCleared = 0;
+    const jellyPos = [];
+    for (const key of cells) {
+      const [r, c] = key.split(',').map(Number);
+      if (this.board.clearJellyAt(r, c)) { jellyCleared++; jellyPos.push({ row: r, col: c }); }
+    }
+    if (this.mission) {
+      if (this.mission.type === MissionType.JELLY) {
+        this.mission.progress += jellyCleared;
+      } else if (this.mission.type === MissionType.COLLECT) {
+        for (const t of destroyedTiles) if (t.color === this.mission.color) this.mission.progress++;
+      } else if (this.mission.type === MissionType.SCORE) {
+        this.mission.progress = this.score;
+      }
+      this._emit({ type: 'mission-progress', mission: this.mission });
+    }
+    if (jellyCleared) this._emitFx({ kind: 'jelly', cells: jellyPos });
+    return jellyCleared;
   }
 
   /** 파괴 직전 셀들의 위치/색을 스냅샷 (특수타일로 대체되는 칸은 제외) */
@@ -1209,6 +1445,7 @@ class GameEngine {
     const gained = this._awardScore(expanded.size);
     const destroyed = this._snapshotCells(expanded, []);
     this.board.destroyCells(expanded, []);
+    this._processClears(expanded, destroyed);
     this._lastMatch = null;
     this._emit({ type: 'combo', combo: types.join('+'), cleared: expanded.size });
     // 콤보는 강력한 연출: 대형 화면 흔들림 + 발동 지점 표시
@@ -1231,11 +1468,6 @@ class GameEngine {
     return gained;
   }
 
-  _computeTargetScore(stage) {
-    // 스테이지가 올라갈수록 목표 점수 증가
-    return 1000 + (stage - 1) * 600;
-  }
-
   _onStageClear() {
     const cleared = this.stage;
     this._emit({ type: 'stage-clear', stage: cleared });
@@ -1250,12 +1482,9 @@ class GameEngine {
       this.hooks.onPerkSelection(cleared);
     }
 
-    // 다음 스테이지 준비
+    // 다음 스테이지 준비 (미션 재생성 + 젤리 시딩 포함)
     this.stage++;
-    this.movesLeft = STAGE_DEFAULTS.BASE_MOVES;
-    this.score = 0;
-    this.targetScore = this._computeTargetScore(this.stage);
-    this.board.reset();
+    this._startStage();
   }
 
   _onOutOfMoves() {
@@ -1419,6 +1648,134 @@ class MockAdProvider {
 }
 
 
+// ===== src/systems/SoundManager.js =====
+// =============================================================
+//  SoundManager.js  -  Web Audio 합성 효과음 (외부 음원 파일 없음)
+//  * 모든 소리를 오실레이터/노이즈로 실시간 합성 -> 자체 완결(에셋 0).
+//  * 브라우저 자동재생 정책 대응: 첫 사용자 입력에서 resume().
+// =============================================================
+
+class SoundManager {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.muted = false;
+    this._ready = false;
+  }
+
+  /** 첫 사용자 제스처에서 호출 (오디오 컨텍스트 활성화) */
+  unlock() {
+    if (this._ready) { this._resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = 0.5;
+    this.master.connect(this.ctx.destination);
+    this._ready = true;
+    this._resume();
+  }
+
+  _resume() {
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  }
+
+  setMuted(m) {
+    this.muted = m;
+    if (this.master) this.master.gain.value = m ? 0 : 0.5;
+  }
+  toggleMute() { this.setMuted(!this.muted); return this.muted; }
+
+  // ---------- 저수준 합성 헬퍼 ----------
+
+  /** 단순 음 하나 (엔벨로프 포함) */
+  _tone(freq, dur, { type = 'sine', vol = 0.3, attack = 0.005, decay = null, when = 0 } = {}) {
+    if (!this._ready || this.muted) return;
+    const t0 = this.ctx.currentTime + when;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(vol, t0 + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + (decay ?? dur));
+    osc.connect(g).connect(this.master);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+
+  /** 주파수 스윕 (로켓/라이트볼) */
+  _sweep(f0, f1, dur, { type = 'sawtooth', vol = 0.25, when = 0 } = {}) {
+    if (!this._ready || this.muted) return;
+    const t0 = this.ctx.currentTime + when;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(f0, t0);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t0 + dur);
+    g.gain.setValueAtTime(vol, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g).connect(this.master);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+
+  /** 노이즈 버스트 (폭발/타격) */
+  _noise(dur, { vol = 0.3, lp = 1200, when = 0 } = {}) {
+    if (!this._ready || this.muted) return;
+    const t0 = this.ctx.currentTime + when;
+    const n = Math.floor(this.ctx.sampleRate * dur);
+    const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = lp;
+    const g = this.ctx.createGain();
+    g.gain.value = vol;
+    src.connect(filter).connect(g).connect(this.master);
+    src.start(t0);
+  }
+
+  // ---------- 게임 효과음 ----------
+
+  swap()    { this._tone(440, 0.08, { type: 'triangle', vol: 0.18 }); this._tone(620, 0.08, { type: 'triangle', vol: 0.14, when: 0.04 }); }
+  invalid() { this._tone(180, 0.16, { type: 'sawtooth', vol: 0.2 }); this._tone(140, 0.16, { type: 'sawtooth', vol: 0.16, when: 0.05 }); }
+
+  /** 매치 팝: 연쇄가 깊을수록 음이 높아진다 */
+  pop(cascade = 1) {
+    const base = 500 + Math.min(cascade, 8) * 70;
+    this._tone(base, 0.12, { type: 'sine', vol: 0.22 });
+    this._tone(base * 1.5, 0.1, { type: 'sine', vol: 0.12, when: 0.02 });
+  }
+
+  jelly()   { this._tone(900, 0.07, { type: 'triangle', vol: 0.18 }); this._noise(0.08, { vol: 0.1, lp: 4000 }); }
+  rocket()  { this._sweep(1200, 200, 0.28, { type: 'sawtooth', vol: 0.22 }); this._noise(0.28, { vol: 0.12, lp: 2500 }); }
+  bomb()    { this._noise(0.35, { vol: 0.4, lp: 900 }); this._tone(90, 0.4, { type: 'sine', vol: 0.35 }); }
+  lightball(){ [0, 1, 2, 3].forEach(i => this._tone(660 * Math.pow(1.26, i), 0.25, { type: 'sine', vol: 0.16, when: i * 0.05 })); }
+  propeller(){ this._sweep(300, 700, 0.2, { type: 'square', vol: 0.14 }); }
+
+  combo() {
+    // 강한 화음 + 저음 붐
+    [523, 659, 784, 1046].forEach((f, i) => this._tone(f, 0.5, { type: 'sine', vol: 0.16, when: i * 0.02 }));
+    this._noise(0.4, { vol: 0.3, lp: 1000 });
+    this._tone(80, 0.5, { type: 'sine', vol: 0.3 });
+  }
+
+  stageClear() {
+    // 상승 아르페지오 징글
+    [523, 659, 784, 1046, 1318].forEach((f, i) =>
+      this._tone(f, 0.3, { type: 'triangle', vol: 0.2, when: i * 0.09 }));
+  }
+
+  perk()   { [784, 988, 1318].forEach((f, i) => this._tone(f, 0.25, { type: 'sine', vol: 0.18, when: i * 0.07 })); }
+  reward() { [659, 988].forEach((f, i) => this._tone(f, 0.18, { type: 'square', vol: 0.16, when: i * 0.08 })); }
+  shuffle(){ this._sweep(200, 600, 0.25, { type: 'triangle', vol: 0.14 }); }
+}
+
+
 // ===== src/render/Effects.js =====
 // =============================================================
 //  Effects.js  -  연출 이펙트 레이어 (파티클/화면흔들림/특수연출/점수팝업)
@@ -1438,6 +1795,7 @@ class Effects {
     this.flashes = [];     // 전체 섬광(라이트볼/콤보)
     this.shakeTime = 0;    // 남은 흔들림 시간
     this.shakeMag = 0;     // 흔들림 강도
+    this.intensity = FX.GLOBAL_INTENSITY; // 전역 연출 세기 (Constants.FX에서 튜닝)
     this._reduced = typeof window !== 'undefined'
       && window.matchMedia
       && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1447,13 +1805,21 @@ class Effects {
   handle(fx) {
     if (fx.kind === 'destroy') this._onDestroy(fx);
     else if (fx.kind === 'combo') this._onCombo(fx);
+    else if (fx.kind === 'jelly') this._onJelly(fx);
+  }
+
+  /** 젤리 파괴: 얼음빛 파편 튐 */
+  _onJelly(fx) {
+    for (const c of fx.cells) {
+      this._burst(cellCenterX(c.col), cellCenterY(c.row), '#bdf0ff', 6);
+    }
   }
 
   _onDestroy(fx) {
     // 파괴된 일반 타일마다 파편 폭발
     for (const t of fx.tiles) {
       this._burst(cellCenterX(t.col), cellCenterY(t.row), COLOR_HEX[t.color] || '#fff',
-        fx.cascade > 1 ? 10 : 7);
+        fx.cascade > 1 ? FX.BURST_CASCADE : FX.BURST_BASE);
     }
     // 발동된 특수타일별 연출
     for (const s of fx.specials) this._specialFx(s);
@@ -1465,7 +1831,7 @@ class Effects {
       this._floater(cx, cy, `+${fx.score}`, fx.cascade);
     }
     // 연쇄가 깊을수록 살짝 흔들림
-    if (fx.cascade >= 2) this.shake(3 + fx.cascade, 0.18);
+    if (fx.cascade >= 2) this.shake(FX.SHAKE_CASCADE_STEP * fx.cascade, 0.18);
   }
 
   _onCombo(fx) {
@@ -1476,15 +1842,15 @@ class Effects {
 
     if (fx.combo === 'LIGHTBALL_LIGHTBALL') {
       this._flash('rgba(255,255,255,0.9)', 0.5);
-      this.shake(16, 0.5);
+      this.shake(FX.SHAKE_COMBO_LIGHTBALL, 0.5);
     } else if (fx.combo === 'ROCKET_BOMB') {
       this._flash('rgba(255,210,63,0.5)', 0.35);
-      this.shake(14, 0.45);
+      this.shake(FX.SHAKE_COMBO_ROCKETBOMB, 0.45);
       // 발동 지점 기준 십자 광선
       this.beams.push(makeBeam(fx.at.row, fx.at.col, RocketDir.HORIZONTAL, '#ffd23f'));
       this.beams.push(makeBeam(fx.at.row, fx.at.col, RocketDir.VERTICAL, '#ffd23f'));
     } else {
-      this.shake(10, 0.35);
+      this.shake(FX.SHAKE_COMBO_ROCKETBOMB * 0.8, 0.35);
     }
     if (fx.score > 0) {
       this._floater(cellCenterX(fx.at.col), cellCenterY(fx.at.row), `+${fx.score}`, 3, true);
@@ -1497,27 +1863,28 @@ class Effects {
     switch (s.type) {
       case SpecialType.ROCKET:
         this.beams.push(makeBeam(s.row, s.col, s.rocketDir, '#ffffff'));
-        this.shake(6, 0.2);
+        this.shake(FX.SHAKE_ROCKET, 0.2);
         break;
       case SpecialType.BOMB:
         this.rings.push(makeRing(x, y, TILE_SIZE * 2.2, '#ff9636'));
         this._burst(x, y, '#ff9636', 18);
-        this.shake(10, 0.3);
+        this.shake(FX.SHAKE_BOMB, 0.3);
         break;
       case SpecialType.LIGHT_BALL:
         this.rings.push(makeRing(x, y, TILE_SIZE * 4.5, '#ffffff'));
         this._flash('rgba(255,255,255,0.35)', 0.25);
-        this.shake(8, 0.25);
+        this.shake(FX.SHAKE_LIGHTBALL, 0.25);
         break;
       case SpecialType.PROPELLER:
         this._burst(x, y, '#42d97a', 14);
-        this.shake(5, 0.2);
+        this.shake(FX.SHAKE_ROCKET, 0.2);
         break;
     }
   }
 
   // ---------- 스폰 헬퍼 ----------
   _burst(x, y, color, count) {
+    count = Math.round(count * this.intensity);
     if (this._reduced) count = Math.min(count, 4);
     for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -1552,6 +1919,7 @@ class Effects {
   /** 화면 흔들림 요청 (기존보다 강하면 갱신) */
   shake(mag, dur) {
     if (this._reduced) return;
+    mag *= this.intensity;
     if (mag >= this.shakeMag || this.shakeTime <= 0) { this.shakeMag = mag; }
     this.shakeTime = Math.max(this.shakeTime, dur);
   }
@@ -1730,6 +2098,16 @@ class Renderer {
       }
     }
 
+    // 젤리(장애물) 오버레이 — 타일 위에 반투명으로 덮인다
+    const jelly = this.engine.board.jelly;
+    if (jelly) {
+      for (let r = 0; r < BOARD_ROWS; r++) {
+        for (let c = 0; c < BOARD_COLS; c++) {
+          if (jelly[r][c] > 0) this._drawJelly(r, c);
+        }
+      }
+    }
+
     // 선택 강조
     if (this.selected) {
       const t = this.selected;
@@ -1812,6 +2190,23 @@ class Renderer {
     }
   }
 }
+
+Renderer.prototype._drawJelly = function (row, col) {
+  const ctx = this.ctx;
+  const x = BOARD_PADDING + col * TILE_SIZE;
+  const y = BOARD_PADDING + row * TILE_SIZE;
+  const pad = 3;
+  ctx.save();
+  ctx.fillStyle = JELLY_HEX;
+  roundRect(ctx, x + pad, y + pad, TILE_SIZE - pad * 2, TILE_SIZE - pad * 2, 12);
+  ctx.fill();
+  // 반짝이는 테두리로 '얼음/젤리' 질감
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, x + pad, y + pad, TILE_SIZE - pad * 2, TILE_SIZE - pad * 2, 12);
+  ctx.stroke();
+  ctx.restore();
+};
 
 function roundRect(ctx, x, y, w, h, r) {
   r = Math.min(r, w / 2, h / 2);
@@ -1911,14 +2306,21 @@ class InputController {
 
 
 
+
+
+
 const canvas = document.getElementById('game');
 const hud = {
   stage: document.getElementById('stage'),
   moves: document.getElementById('moves'),
   score: document.getElementById('score'),
-  target: document.getElementById('target'),
   hearts: document.getElementById('hearts'),
+  missionLabel: document.getElementById('mission-label'),
+  missionBar: document.getElementById('mission-bar'),
+  missionCount: document.getElementById('mission-count'),
+  missionDot: document.getElementById('mission-dot'),
   log: document.getElementById('log'),
+  muteBtn: document.getElementById('mute-btn'),
 };
 const perkOverlay = document.getElementById('perk-overlay');
 const perkChoices = document.getElementById('perk-choices');
@@ -1926,25 +2328,17 @@ const perkChoices = document.getElementById('perk-choices');
 // --- 시스템 인스턴스 ---
 const perkSystem = new PerkSystem();
 const effects = new Effects();
+const sound = new SoundManager();
 let adInterface; // engine 생성 후 배선
 
 // --- 엔진 생성 (외부 콜백 연결) ---
 const engine = new GameEngine({
   onStateChange: (to) => { /* 디버그용: console.log(to) */ },
-  onEvent: (e) => logEvent(e),
-  onFx: (fx) => effects.handle(fx), // 연출 이벤트 -> 이펙트 레이어
-  onOutOfMoves: () => {
-    // 스펙 #5: 이동 소진 -> 보상형 광고
-    adInterface.onOutOfMoves();
-  },
-  onInterstitialCheck: (stage) => {
-    // 스펙 #5: 3의 배수 스테이지 전면광고
-    adInterface.onStageClear(stage);
-  },
-  onPerkSelection: () => {
-    // 스펙 #4: 퍽 3개 선택 UI
-    showPerkSelection();
-  },
+  onEvent: (e) => { logEvent(e); soundForEvent(e); },
+  onFx: (fx) => { effects.handle(fx); soundForFx(fx); },
+  onOutOfMoves: () => adInterface.onOutOfMoves(),       // 스펙 #5
+  onInterstitialCheck: (stage) => adInterface.onStageClear(stage),
+  onPerkSelection: () => showPerkSelection(),           // 스펙 #4
 });
 
 adInterface = new AdInterface(engine);
@@ -1952,19 +2346,81 @@ adInterface = new AdInterface(engine);
 const renderer = new Renderer(canvas, engine, effects);
 new InputController(canvas, engine, renderer);
 
+// --- 오디오 잠금 해제 (브라우저 자동재생 정책) ---
+function unlockAudio() { sound.unlock(); }
+['pointerdown', 'touchstart', 'keydown'].forEach(ev =>
+  window.addEventListener(ev, unlockAudio, { once: true }));
+
+// --- 음소거 토글 ---
+if (hud.muteBtn) {
+  hud.muteBtn.onclick = () => {
+    sound.unlock();
+    const muted = sound.toggleMute();
+    hud.muteBtn.textContent = muted ? '🔇' : '🔊';
+  };
+}
+
+// --- 소리 라우팅 ---
+function soundForEvent(e) {
+  switch (e.type) {
+    case 'swap': sound.swap(); break;
+    case 'invalid-swap': sound.invalid(); break;
+    case 'stage-clear': sound.stageClear(); break;
+    case 'perk-applied': sound.perk(); break;
+    case 'reward-moves':
+    case 'heart-refill': sound.reward(); break;
+    case 'shuffle': sound.shuffle(); break;
+  }
+}
+function soundForFx(fx) {
+  if (fx.kind === 'destroy') {
+    sound.pop(fx.cascade || 1);
+    if (fx.jellyCleared) sound.jelly();
+    for (const s of (fx.specials || [])) {
+      if (s.type === 'ROCKET') sound.rocket();
+      else if (s.type === 'BOMB') sound.bomb();
+      else if (s.type === 'LIGHT_BALL') sound.lightball();
+      else if (s.type === 'PROPELLER') sound.propeller();
+    }
+  } else if (fx.kind === 'combo') {
+    sound.combo();
+  }
+}
+
 // --- HUD 갱신 ---
 function updateHud() {
   hud.stage.textContent = engine.stage;
   hud.moves.textContent = engine.movesLeft;
   hud.score.textContent = engine.score;
-  hud.target.textContent = engine.targetScore;
   hud.hearts.textContent = '❤'.repeat(engine.hearts);
+  updateMissionHud();
+}
+
+function updateMissionHud() {
+  const m = engine.mission;
+  if (!m) return;
+  hud.missionLabel.textContent = m.label;
+  const pct = Math.min(100, Math.round((m.progress / m.target) * 100));
+  hud.missionBar.style.width = pct + '%';
+  hud.missionCount.textContent = `${Math.min(m.progress, m.target)} / ${m.target}`;
+  // 미션 종류별 색 표시
+  const hex = MissionSystem.colorHex(m);
+  if (m.type === MissionType.COLLECT && hex) {
+    hud.missionDot.style.background = hex;
+    hud.missionDot.style.display = 'inline-block';
+  } else if (m.type === MissionType.JELLY) {
+    hud.missionDot.style.background = 'rgba(180,240,255,0.9)';
+    hud.missionDot.style.display = 'inline-block';
+  } else {
+    hud.missionDot.style.display = 'none';
+  }
 }
 
 function logEvent(e) {
   if (!hud.log) return;
   const labels = {
     'stage-clear': `🎉 스테이지 ${e.stage} 클리어!`,
+    'mission': `🎯 새 목표: ${e.mission.label}`,
     'combo': `💥 콤보 ${e.combo} → ${e.cleared}칸 제거`,
     'out-of-moves': `⛔ 이동 소진! 광고 보상 확인`,
     'reward-moves': `➕ 광고 보상: 이동 +${e.amount}`,
@@ -2010,6 +2466,6 @@ function loop(now) {
 requestAnimationFrame(loop);
 
 // 디버그: 전역 노출
-window.__game = { engine, renderer, effects, perkSystem };
+window.__game = { engine, renderer, effects, sound, perkSystem };
 
 </script>

@@ -6,7 +6,7 @@
 
 import {
   TILE_SIZE, BOARD_PADDING, BOARD_ROWS, BOARD_COLS,
-  COLOR_HEX, SpecialType, RocketDir,
+  COLOR_HEX, SpecialType, RocketDir, FX,
 } from '../core/Constants.js';
 
 const cellCenterX = (col) => BOARD_PADDING + col * TILE_SIZE + TILE_SIZE / 2;
@@ -21,6 +21,7 @@ export class Effects {
     this.flashes = [];     // 전체 섬광(라이트볼/콤보)
     this.shakeTime = 0;    // 남은 흔들림 시간
     this.shakeMag = 0;     // 흔들림 강도
+    this.intensity = FX.GLOBAL_INTENSITY; // 전역 연출 세기 (Constants.FX에서 튜닝)
     this._reduced = typeof window !== 'undefined'
       && window.matchMedia
       && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -30,13 +31,21 @@ export class Effects {
   handle(fx) {
     if (fx.kind === 'destroy') this._onDestroy(fx);
     else if (fx.kind === 'combo') this._onCombo(fx);
+    else if (fx.kind === 'jelly') this._onJelly(fx);
+  }
+
+  /** 젤리 파괴: 얼음빛 파편 튐 */
+  _onJelly(fx) {
+    for (const c of fx.cells) {
+      this._burst(cellCenterX(c.col), cellCenterY(c.row), '#bdf0ff', 6);
+    }
   }
 
   _onDestroy(fx) {
     // 파괴된 일반 타일마다 파편 폭발
     for (const t of fx.tiles) {
       this._burst(cellCenterX(t.col), cellCenterY(t.row), COLOR_HEX[t.color] || '#fff',
-        fx.cascade > 1 ? 10 : 7);
+        fx.cascade > 1 ? FX.BURST_CASCADE : FX.BURST_BASE);
     }
     // 발동된 특수타일별 연출
     for (const s of fx.specials) this._specialFx(s);
@@ -48,7 +57,7 @@ export class Effects {
       this._floater(cx, cy, `+${fx.score}`, fx.cascade);
     }
     // 연쇄가 깊을수록 살짝 흔들림
-    if (fx.cascade >= 2) this.shake(3 + fx.cascade, 0.18);
+    if (fx.cascade >= 2) this.shake(FX.SHAKE_CASCADE_STEP * fx.cascade, 0.18);
   }
 
   _onCombo(fx) {
@@ -59,15 +68,15 @@ export class Effects {
 
     if (fx.combo === 'LIGHTBALL_LIGHTBALL') {
       this._flash('rgba(255,255,255,0.9)', 0.5);
-      this.shake(16, 0.5);
+      this.shake(FX.SHAKE_COMBO_LIGHTBALL, 0.5);
     } else if (fx.combo === 'ROCKET_BOMB') {
       this._flash('rgba(255,210,63,0.5)', 0.35);
-      this.shake(14, 0.45);
+      this.shake(FX.SHAKE_COMBO_ROCKETBOMB, 0.45);
       // 발동 지점 기준 십자 광선
       this.beams.push(makeBeam(fx.at.row, fx.at.col, RocketDir.HORIZONTAL, '#ffd23f'));
       this.beams.push(makeBeam(fx.at.row, fx.at.col, RocketDir.VERTICAL, '#ffd23f'));
     } else {
-      this.shake(10, 0.35);
+      this.shake(FX.SHAKE_COMBO_ROCKETBOMB * 0.8, 0.35);
     }
     if (fx.score > 0) {
       this._floater(cellCenterX(fx.at.col), cellCenterY(fx.at.row), `+${fx.score}`, 3, true);
@@ -80,27 +89,28 @@ export class Effects {
     switch (s.type) {
       case SpecialType.ROCKET:
         this.beams.push(makeBeam(s.row, s.col, s.rocketDir, '#ffffff'));
-        this.shake(6, 0.2);
+        this.shake(FX.SHAKE_ROCKET, 0.2);
         break;
       case SpecialType.BOMB:
         this.rings.push(makeRing(x, y, TILE_SIZE * 2.2, '#ff9636'));
         this._burst(x, y, '#ff9636', 18);
-        this.shake(10, 0.3);
+        this.shake(FX.SHAKE_BOMB, 0.3);
         break;
       case SpecialType.LIGHT_BALL:
         this.rings.push(makeRing(x, y, TILE_SIZE * 4.5, '#ffffff'));
         this._flash('rgba(255,255,255,0.35)', 0.25);
-        this.shake(8, 0.25);
+        this.shake(FX.SHAKE_LIGHTBALL, 0.25);
         break;
       case SpecialType.PROPELLER:
         this._burst(x, y, '#42d97a', 14);
-        this.shake(5, 0.2);
+        this.shake(FX.SHAKE_ROCKET, 0.2);
         break;
     }
   }
 
   // ---------- 스폰 헬퍼 ----------
   _burst(x, y, color, count) {
+    count = Math.round(count * this.intensity);
     if (this._reduced) count = Math.min(count, 4);
     for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -135,6 +145,7 @@ export class Effects {
   /** 화면 흔들림 요청 (기존보다 강하면 갱신) */
   shake(mag, dur) {
     if (this._reduced) return;
+    mag *= this.intensity;
     if (mag >= this.shakeMag || this.shakeTime <= 0) { this.shakeMag = mag; }
     this.shakeTime = Math.max(this.shakeTime, dur);
   }
