@@ -16,7 +16,7 @@ export const PERK_POOL = [
   },
   {
     id: 'cascade_speed', name: '연쇄 가속', icon: '⚡', repeatable: true,
-    desc: '연쇄 시간 보너스 +50%',
+    desc: 'TIME감소+50%',
     apply: (engine) => { engine.perks.cascadeTimeMult += 0.5; },
   },
   {
@@ -37,7 +37,7 @@ export const PERK_POOL = [
   },
   {
     id: 'propeller_target', name: '정밀 유도', icon: '✈️', repeatable: true,
-    desc: '프로펠러 타격 목표 +1',
+    desc: '미션블록제거+1',
     apply: (engine) => { engine.perks.propellerTargets += 1; },
   },
   // --- 기존 ---
