@@ -5,7 +5,7 @@
 
 import {
   BOARD_ROWS, BOARD_COLS, TILE_SIZE, BOARD_PADDING,
-  COLOR_HEX, SpecialType, RocketDir, JELLY_HEX,
+  COLOR_HEX, SpecialType, RocketDir, JELLY,
 } from '../core/Constants.js';
 
 export class Renderer {
@@ -159,16 +159,39 @@ Renderer.prototype._drawJelly = function (row, col) {
   const ctx = this.ctx;
   const x = BOARD_PADDING + col * TILE_SIZE;
   const y = BOARD_PADDING + row * TILE_SIZE;
-  const pad = 3;
+  const pad = 4;
+  const bx = x + pad, by = y + pad, bw = TILE_SIZE - pad * 2, bh = TILE_SIZE - pad * 2;
   ctx.save();
-  ctx.fillStyle = JELLY_HEX;
-  roundRect(ctx, x + pad, y + pad, TILE_SIZE - pad * 2, TILE_SIZE - pad * 2, 12);
+
+  // 1) 아주 옅은 유리 코팅 — 밑 타일 색이 선명하게 비친다
+  ctx.fillStyle = JELLY.FILL;
+  roundRect(ctx, bx, by, bw, bh, 12);
   ctx.fill();
-  // 반짝이는 테두리로 '얼음/젤리' 질감
-  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-  ctx.lineWidth = 2;
-  roundRect(ctx, x + pad, y + pad, TILE_SIZE - pad * 2, TILE_SIZE - pad * 2, 12);
+
+  // 2) 상단 광택 (유리질감, 색은 거의 안 가림)
+  ctx.fillStyle = JELLY.GLOSS;
+  roundRect(ctx, bx + bw * 0.12, by + bh * 0.08, bw * 0.55, bh * 0.22, 6);
+  ctx.fill();
+
+  // 3) 뚜렷한 이중 서리 테두리 — '젤리 있음'을 확실히 표시
+  ctx.strokeStyle = JELLY.EDGE;
+  ctx.lineWidth = 3.5;
+  roundRect(ctx, bx, by, bw, bh, 12);
   ctx.stroke();
+  ctx.strokeStyle = JELLY.EDGE_INNER;
+  ctx.lineWidth = 1.5;
+  roundRect(ctx, bx + 3, by + 3, bw - 6, bh - 6, 9);
+  ctx.stroke();
+
+  // 4) 코너 서리 아이콘 (❄) — 색과 겹치지 않게 좌상단 작게
+  ctx.font = `${Math.round(TILE_SIZE * 0.26)}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.shadowColor = 'rgba(0,60,90,0.6)';
+  ctx.shadowBlur = 3;
+  ctx.fillText(JELLY.ICON, bx + bw * 0.2, by + bh * 0.2);
+
   ctx.restore();
 };
 
