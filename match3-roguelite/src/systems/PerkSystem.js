@@ -35,6 +35,11 @@ export const PERK_POOL = [
     desc: '스테이지 시작 시 특수타일 +1개',
     apply: (engine) => { engine.perks.startSpecials += 1; },
   },
+  {
+    id: 'propeller_target', name: '정밀 유도', icon: '✈️', repeatable: true,
+    desc: '프로펠러 타격 목표 +1',
+    apply: (engine) => { engine.perks.propellerTargets += 1; },
+  },
   // --- 기존 ---
   {
     id: 'extra_move_4combo', name: '전술적 여유', icon: '🎯', repeatable: true,

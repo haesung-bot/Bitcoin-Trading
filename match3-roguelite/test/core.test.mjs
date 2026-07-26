@@ -322,5 +322,45 @@ console.log('\n[22] 신규 퍽: 대형 폭탄 반경 확대 & 콤보 보너스 �
   assert(before - engine.stageTime >= 5, `콤보 보너스 5초↑ 차감 (${(before - engine.stageTime).toFixed(1)})`);
 }
 
+console.log('\n[23] 프로펠러 다중 목표 (퍽 +N) & 젤리 우선');
+{
+  const b = new Board();
+  setBoard(b, uniformExcept());
+  const prop = b.grid[4][4];
+  prop.special = SpecialType.PROPELLER;
+  // 목표 3개 요청 -> 3개의 서로 다른 목표 선정 (발동 위치 제외)
+  b.activateSpecial(prop, { propellerTargets: 3 });
+  const tgts = b._lastPropellerTargets;
+  assert(tgts.length === 3, `목표 3개 선정 (got ${tgts.length})`);
+  const keys = new Set(tgts.map(t => `${t.row},${t.col}`));
+  assert(keys.size === 3, '목표 중복 없음');
+  assert(!keys.has('4,4'), '발동 위치는 목표에서 제외');
+
+  // 젤리 우선: 젤리 2칸 심고 목표 3개 -> 젤리 2칸이 목표에 포함
+  const b2 = new Board();
+  setBoard(b2, uniformExcept());
+  b2.jelly = Array.from({ length: 8 }, () => new Array(8).fill(0));
+  b2.jelly[0][0] = 1; b2.jelly[7][7] = 1;
+  const prop2 = b2.grid[4][4];
+  prop2.special = SpecialType.PROPELLER;
+  b2.activateSpecial(prop2, { propellerTargets: 3 });
+  const keys2 = new Set(b2._lastPropellerTargets.map(t => `${t.row},${t.col}`));
+  assert(keys2.has('0,0') && keys2.has('7,7'), '젤리 칸이 우선 목표로 선정됨');
+}
+
+console.log('\n[24] 정밀 유도 퍽 -> propellerTargets 증가 & 실제 목표 수 반영');
+{
+  const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
+  assert(engine.perks.propellerTargets === 0, '기본 추가 목표 0');
+  engine.perks.propellerTargets = 2; // 퍽 2회 획득 가정 -> 총 3목표
+  setBoard(engine.board, uniformExcept());
+  const prop = engine.board.grid[4][4];
+  prop.special = SpecialType.PROPELLER;
+  const fx = [];
+  engine._expandSpecials(new Set(['4,4']), fx);
+  const pfx = fx.find(f => f.type === SpecialType.PROPELLER);
+  assert(pfx && pfx.targets && pfx.targets.length === 3, `연출용 목표 3개 첨부 (got ${pfx && pfx.targets && pfx.targets.length})`);
+}
+
 console.log(`\n===== 결과: ${pass} 통과 / ${fail} 실패 =====`);
 process.exit(fail === 0 ? 0 : 1);

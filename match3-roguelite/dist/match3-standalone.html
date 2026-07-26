@@ -921,14 +921,17 @@ class Board {
         break;
       }
       case SpecialType.PROPELLER: {
-        // 주변(상하좌우) 제거 + 미션 목표(없으면 랜덤 타일)로 유도
+        // 주변(상하좌우) 제거 + 목표 N곳으로 유도 (퍽으로 목표 수 증가)
         affected.add(`${r},${c}`);
         for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
           const rr = r + dr, cc = c + dc;
           if (this.inBounds(rr, cc)) affected.add(`${rr},${cc}`);
         }
-        const target = this._propellerTarget(ctx);
-        if (target) affected.add(`${target.row},${target.col}`);
+        const count = Math.max(1, ctx.propellerTargets || 1);
+        const targets = this._propellerTargets(ctx, count, r, c);
+        for (const t of targets) affected.add(`${t.row},${t.col}`);
+        // 연출(궤적)용으로 마지막 발동의 목표 목록을 기록
+        this._lastPropellerTargets = targets;
         break;
       }
       default:
@@ -938,39 +941,48 @@ class Board {
   }
 
   /**
-   * 프로펠러가 유도할 목표 우선순위:
-   *   1) 명시된 미션 좌표
-   *   2) 남아있는 젤리 칸 (미션 젤리 제거 지원)
-   *   3) 미션 색 타일
-   *   4) 임의 타일
+   * 프로펠러가 유도할 목표 N곳을 우선순위대로 고른다 (중복 없이):
+   *   1) 남아있는 젤리 칸 (미션 젤리 제거 지원)
+   *   2) 미션 색 타일
+   *   3) 임의 타일
+   * @param {object} ctx {missionColor}
+   * @param {number} count 목표 개수
+   * @param {number} sr 발동 위치(제외 대상)
+   * @param {number} sc
+   * @returns {{row:number,col:number}[]}
    */
-  _propellerTarget(ctx) {
-    if (ctx.missionRow != null && ctx.missionCol != null) {
-      return { row: ctx.missionRow, col: ctx.missionCol };
-    }
-    // 젤리 우선
-    const jellyCells = [];
+  _propellerTargets(ctx, count, sr, sc) {
+    const used = new Set([`${sr},${sc}`]);
+    const pickFrom = (cells) => {
+      // 이미 고른 칸 제외 후 무작위 셔플
+      const pool = cells.filter(k => !used.has(`${k.row},${k.col}`));
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      return pool;
+    };
+    const jelly = [], colorCells = [], any = [];
     for (let r = 0; r < BOARD_ROWS; r++)
-      for (let c = 0; c < BOARD_COLS; c++)
-        if (this.jelly[r][c] > 0) jellyCells.push({ row: r, col: c });
-    if (jellyCells.length) return jellyCells[(Math.random() * jellyCells.length) | 0];
+      for (let c = 0; c < BOARD_COLS; c++) {
+        if (this.jelly[r][c] > 0) jelly.push({ row: r, col: c });
+        if (ctx.missionColor != null && this.grid[r][c] && this.grid[r][c].color === ctx.missionColor)
+          colorCells.push({ row: r, col: c });
+        if (this.grid[r][c]) any.push({ row: r, col: c });
+      }
 
-    // 미션 색 타일
-    if (ctx.missionColor != null) {
-      const colorCells = [];
-      for (let r = 0; r < BOARD_ROWS; r++)
-        for (let c = 0; c < BOARD_COLS; c++)
-          if (this.grid[r][c] && this.grid[r][c].color === ctx.missionColor)
-            colorCells.push({ row: r, col: c });
-      if (colorCells.length) return colorCells[(Math.random() * colorCells.length) | 0];
+    const result = [];
+    for (const tier of [jelly, colorCells, any]) {
+      for (const cell of pickFrom(tier)) {
+        if (result.length >= count) break;
+        const key = `${cell.row},${cell.col}`;
+        if (used.has(key)) continue;
+        used.add(key);
+        result.push(cell);
+      }
+      if (result.length >= count) break;
     }
-
-    const candidates = [];
-    for (let r = 0; r < BOARD_ROWS; r++)
-      for (let c = 0; c < BOARD_COLS; c++)
-        if (this.grid[r][c]) candidates.push({ row: r, col: c });
-    if (!candidates.length) return null;
-    return candidates[(Math.random() * candidates.length) | 0];
+    return result;
   }
 
   /**
@@ -1181,6 +1193,7 @@ class GameEngine {
       cascadeTimeMult: 1,    // 연쇄 시간 보너스 배율
       clearCredit: 0,        // 스테이지 클리어 시 기록 시간 감면(초)
       startSpecials: 0,      // 스테이지 시작 시 배치할 랜덤 특수타일 수
+      propellerTargets: 0,   // 프로펠러 추가 목표 수 (+N)
     };
 
     // --- 스왑/연쇄 처리용 임시 상태 ---
@@ -1481,13 +1494,19 @@ class GameEngine {
       const t = queue.shift();
       if (activated.has(t.id)) continue;
       activated.add(t.id);
-      // 연출용: 발동 순간의 특수타일 위치/종류 기록
-      if (fxOut) fxOut.push({ type: t.special, row: t.row, col: t.col, rocketDir: t.rocketDir, color: t.color });
-      // 프로펠러 유도 목표(미션색)와 폭탄 반경(퍽) 전달
+      // 연출용: 발동 순간의 특수타일 위치/종류 기록 (참조를 잡아두고 목표는 발동 후 채움)
+      const fxEntry = { type: t.special, row: t.row, col: t.col, rocketDir: t.rocketDir, color: t.color };
+      if (fxOut) fxOut.push(fxEntry);
+      // 프로펠러 유도 목표(미션색/개수)와 폭탄 반경(퍽) 전달
       const affected = this.board.activateSpecial(t, {
         missionColor: this.mission ? this.mission.color : null,
         bombRadius: this.perks.bombRadius,
+        propellerTargets: 1 + this.perks.propellerTargets,
       });
+      // 프로펠러면 방금 고른 목표들을 궤적 연출용으로 첨부
+      if (t.special === SpecialType.PROPELLER && fxOut) {
+        fxEntry.targets = (this.board._lastPropellerTargets || []).map(p => ({ row: p.row, col: p.col }));
+      }
       for (const key of affected) {
         result.add(key);
         const [r, c] = key.split(',').map(Number);
@@ -1713,6 +1732,11 @@ const PERK_POOL = [
     id: 'lucky_special', name: '행운의 시작', icon: '🍀', repeatable: true,
     desc: '스테이지 시작 시 특수타일 +1개',
     apply: (engine) => { engine.perks.startSpecials += 1; },
+  },
+  {
+    id: 'propeller_target', name: '정밀 유도', icon: '✈️', repeatable: true,
+    desc: '프로펠러 타격 목표 +1',
+    apply: (engine) => { engine.perks.propellerTargets += 1; },
   },
   // --- 기존 ---
   {
@@ -1963,6 +1987,7 @@ class Effects {
     this.rings = [];       // 폭발/충격파 링
     this.flashes = [];     // 전체 섬광(라이트볼/콤보)
     this.banners = [];     // 콤보 메시지 배너 (오래 표시)
+    this.flyers = [];      // 프로펠러 비행 궤적 (✈ 트레일)
     this.shakeTime = 0;    // 남은 흔들림 시간
     this.shakeMag = 0;     // 흔들림 강도
     this.intensity = FX.GLOBAL_INTENSITY; // 전역 연출 세기 (Constants.FX에서 튜닝)
@@ -2050,6 +2075,20 @@ class Effects {
     this.banners.push({ text, color, life: FX.COMBO_BANNER_SEC, max: FX.COMBO_BANNER_SEC });
   }
 
+  /** 프로펠러 비행 궤적: (fromR,fromC) -> (toR,toC) 로 ✈ 가 날아가며 트레일 */
+  _spawnFlyer(fromR, fromC, toR, toC) {
+    const fromX = cellCenterX(fromC), fromY = cellCenterY(fromR);
+    const toX = cellCenterX(toC), toY = cellCenterY(toR);
+    // 거리에 비례한 비행 시간 (한 칸당 대략 0.04초, 0.28~0.5초 범위)
+    const dist = Math.hypot(toX - fromX, toY - fromY);
+    const dur = Math.min(0.5, Math.max(0.28, dist / TILE_SIZE * 0.05));
+    this.flyers.push({
+      fromX, fromY, toX, toY, x: fromX, y: fromY,
+      t: 0, dur, trail: [], arrived: false,
+      angle: Math.atan2(toY - fromY, toX - fromX),
+    });
+  }
+
   /** 특수타일 종류별 시각 연출 */
   _specialFx(s) {
     const x = cellCenterX(s.col), y = cellCenterY(s.row);
@@ -2069,8 +2108,12 @@ class Effects {
         this.shake(FX.SHAKE_LIGHTBALL, 0.25);
         break;
       case SpecialType.PROPELLER:
-        this._burst(x, y, '#42d97a', 14);
+        this._burst(x, y, '#42d97a', 12);
         this.shake(FX.SHAKE_ROCKET, 0.2);
+        // 목표마다 ✈ 비행 궤적
+        if (s.targets && s.targets.length) {
+          for (const tg of s.targets) this._spawnFlyer(s.row, s.col, tg.row, tg.col);
+        }
         break;
     }
   }
@@ -2150,6 +2193,24 @@ class Effects {
 
     for (const bn of this.banners) bn.life -= dt;
     this.banners = this.banners.filter(bn => bn.life > 0);
+
+    // 프로펠러 비행체: 목표까지 이동 + 트레일 남기기 + 도착 폭발
+    for (const f of this.flyers) {
+      if (f.t < 1) {
+        f.t = Math.min(1, f.t + dt / f.dur);
+        const e = easeInOut(f.t);
+        f.x = lerp(f.fromX, f.toX, e);
+        f.y = lerp(f.fromY, f.toY, e);
+        f.trail.push({ x: f.x, y: f.y, age: 0 });
+        if (f.t >= 1 && !f.arrived) {
+          f.arrived = true;
+          this._burst(f.toX, f.toY, '#9ff0c0', 9); // 도착 지점 폭발
+        }
+      }
+      for (const p of f.trail) p.age += dt;
+      f.trail = f.trail.filter(p => p.age < 0.3);
+    }
+    this.flyers = this.flyers.filter(f => f.t < 1 || f.trail.length > 0);
   }
 
   /** 보드/타일 위에 겹쳐 그린다 (renderer가 흔들림 변환 안에서 호출) */
@@ -2186,6 +2247,33 @@ class Effects {
       ctx.arc(r.x, r.y, rad, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
+    }
+
+    // 프로펠러 비행 궤적 (트레일 + ✈ 헤드)
+    for (const f of this.flyers) {
+      // 트레일 점들
+      for (const p of f.trail) {
+        const a = Math.max(0, 1 - p.age / 0.3);
+        ctx.save();
+        ctx.globalAlpha = a * 0.7;
+        ctx.fillStyle = '#9ff0c0';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4 * a + 1, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      // 비행 중인 ✈ 헤드 (진행 방향으로 회전)
+      if (f.t < 1) {
+        ctx.save();
+        ctx.translate(f.x, f.y);
+        ctx.rotate(f.angle);
+        ctx.font = 'bold 30px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText('✈', 0, 0);
+        ctx.restore();
+      }
     }
 
     // 파편
@@ -2264,6 +2352,8 @@ function makeRing(x, y, maxR, color) {
 }
 function avg(arr) { return arr.reduce((s, v) => s + v, 0) / arr.length; }
 function easeOut(t) { return 1 - (1 - t) * (1 - t); }
+function easeInOut(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+function lerp(a, b, t) { return a + (b - a) * t; }
 
 
 // ===== src/render/Renderer.js =====

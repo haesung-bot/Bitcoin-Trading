@@ -20,6 +20,7 @@ export class Effects {
     this.rings = [];       // 폭발/충격파 링
     this.flashes = [];     // 전체 섬광(라이트볼/콤보)
     this.banners = [];     // 콤보 메시지 배너 (오래 표시)
+    this.flyers = [];      // 프로펠러 비행 궤적 (✈ 트레일)
     this.shakeTime = 0;    // 남은 흔들림 시간
     this.shakeMag = 0;     // 흔들림 강도
     this.intensity = FX.GLOBAL_INTENSITY; // 전역 연출 세기 (Constants.FX에서 튜닝)
@@ -107,6 +108,20 @@ export class Effects {
     this.banners.push({ text, color, life: FX.COMBO_BANNER_SEC, max: FX.COMBO_BANNER_SEC });
   }
 
+  /** 프로펠러 비행 궤적: (fromR,fromC) -> (toR,toC) 로 ✈ 가 날아가며 트레일 */
+  _spawnFlyer(fromR, fromC, toR, toC) {
+    const fromX = cellCenterX(fromC), fromY = cellCenterY(fromR);
+    const toX = cellCenterX(toC), toY = cellCenterY(toR);
+    // 거리에 비례한 비행 시간 (한 칸당 대략 0.04초, 0.28~0.5초 범위)
+    const dist = Math.hypot(toX - fromX, toY - fromY);
+    const dur = Math.min(0.5, Math.max(0.28, dist / TILE_SIZE * 0.05));
+    this.flyers.push({
+      fromX, fromY, toX, toY, x: fromX, y: fromY,
+      t: 0, dur, trail: [], arrived: false,
+      angle: Math.atan2(toY - fromY, toX - fromX),
+    });
+  }
+
   /** 특수타일 종류별 시각 연출 */
   _specialFx(s) {
     const x = cellCenterX(s.col), y = cellCenterY(s.row);
@@ -126,8 +141,12 @@ export class Effects {
         this.shake(FX.SHAKE_LIGHTBALL, 0.25);
         break;
       case SpecialType.PROPELLER:
-        this._burst(x, y, '#42d97a', 14);
+        this._burst(x, y, '#42d97a', 12);
         this.shake(FX.SHAKE_ROCKET, 0.2);
+        // 목표마다 ✈ 비행 궤적
+        if (s.targets && s.targets.length) {
+          for (const tg of s.targets) this._spawnFlyer(s.row, s.col, tg.row, tg.col);
+        }
         break;
     }
   }
@@ -207,6 +226,24 @@ export class Effects {
 
     for (const bn of this.banners) bn.life -= dt;
     this.banners = this.banners.filter(bn => bn.life > 0);
+
+    // 프로펠러 비행체: 목표까지 이동 + 트레일 남기기 + 도착 폭발
+    for (const f of this.flyers) {
+      if (f.t < 1) {
+        f.t = Math.min(1, f.t + dt / f.dur);
+        const e = easeInOut(f.t);
+        f.x = lerp(f.fromX, f.toX, e);
+        f.y = lerp(f.fromY, f.toY, e);
+        f.trail.push({ x: f.x, y: f.y, age: 0 });
+        if (f.t >= 1 && !f.arrived) {
+          f.arrived = true;
+          this._burst(f.toX, f.toY, '#9ff0c0', 9); // 도착 지점 폭발
+        }
+      }
+      for (const p of f.trail) p.age += dt;
+      f.trail = f.trail.filter(p => p.age < 0.3);
+    }
+    this.flyers = this.flyers.filter(f => f.t < 1 || f.trail.length > 0);
   }
 
   /** 보드/타일 위에 겹쳐 그린다 (renderer가 흔들림 변환 안에서 호출) */
@@ -243,6 +280,33 @@ export class Effects {
       ctx.arc(r.x, r.y, rad, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
+    }
+
+    // 프로펠러 비행 궤적 (트레일 + ✈ 헤드)
+    for (const f of this.flyers) {
+      // 트레일 점들
+      for (const p of f.trail) {
+        const a = Math.max(0, 1 - p.age / 0.3);
+        ctx.save();
+        ctx.globalAlpha = a * 0.7;
+        ctx.fillStyle = '#9ff0c0';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4 * a + 1, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      // 비행 중인 ✈ 헤드 (진행 방향으로 회전)
+      if (f.t < 1) {
+        ctx.save();
+        ctx.translate(f.x, f.y);
+        ctx.rotate(f.angle);
+        ctx.font = 'bold 30px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText('✈', 0, 0);
+        ctx.restore();
+      }
     }
 
     // 파편
@@ -321,3 +385,5 @@ function makeRing(x, y, maxR, color) {
 }
 function avg(arr) { return arr.reduce((s, v) => s + v, 0) / arr.length; }
 function easeOut(t) { return 1 - (1 - t) * (1 - t); }
+function easeInOut(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+function lerp(a, b, t) { return a + (b - a) * t; }

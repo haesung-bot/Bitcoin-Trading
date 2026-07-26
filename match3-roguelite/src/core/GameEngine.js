@@ -54,6 +54,7 @@ export class GameEngine {
       cascadeTimeMult: 1,    // 연쇄 시간 보너스 배율
       clearCredit: 0,        // 스테이지 클리어 시 기록 시간 감면(초)
       startSpecials: 0,      // 스테이지 시작 시 배치할 랜덤 특수타일 수
+      propellerTargets: 0,   // 프로펠러 추가 목표 수 (+N)
     };
 
     // --- 스왑/연쇄 처리용 임시 상태 ---
@@ -354,13 +355,19 @@ export class GameEngine {
       const t = queue.shift();
       if (activated.has(t.id)) continue;
       activated.add(t.id);
-      // 연출용: 발동 순간의 특수타일 위치/종류 기록
-      if (fxOut) fxOut.push({ type: t.special, row: t.row, col: t.col, rocketDir: t.rocketDir, color: t.color });
-      // 프로펠러 유도 목표(미션색)와 폭탄 반경(퍽) 전달
+      // 연출용: 발동 순간의 특수타일 위치/종류 기록 (참조를 잡아두고 목표는 발동 후 채움)
+      const fxEntry = { type: t.special, row: t.row, col: t.col, rocketDir: t.rocketDir, color: t.color };
+      if (fxOut) fxOut.push(fxEntry);
+      // 프로펠러 유도 목표(미션색/개수)와 폭탄 반경(퍽) 전달
       const affected = this.board.activateSpecial(t, {
         missionColor: this.mission ? this.mission.color : null,
         bombRadius: this.perks.bombRadius,
+        propellerTargets: 1 + this.perks.propellerTargets,
       });
+      // 프로펠러면 방금 고른 목표들을 궤적 연출용으로 첨부
+      if (t.special === SpecialType.PROPELLER && fxOut) {
+        fxEntry.targets = (this.board._lastPropellerTargets || []).map(p => ({ row: p.row, col: p.col }));
+      }
       for (const key of affected) {
         result.add(key);
         const [r, c] = key.split(',').map(Number);

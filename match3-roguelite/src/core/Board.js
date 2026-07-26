@@ -193,14 +193,17 @@ export class Board {
         break;
       }
       case SpecialType.PROPELLER: {
-        // 주변(상하좌우) 제거 + 미션 목표(없으면 랜덤 타일)로 유도
+        // 주변(상하좌우) 제거 + 목표 N곳으로 유도 (퍽으로 목표 수 증가)
         affected.add(`${r},${c}`);
         for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
           const rr = r + dr, cc = c + dc;
           if (this.inBounds(rr, cc)) affected.add(`${rr},${cc}`);
         }
-        const target = this._propellerTarget(ctx);
-        if (target) affected.add(`${target.row},${target.col}`);
+        const count = Math.max(1, ctx.propellerTargets || 1);
+        const targets = this._propellerTargets(ctx, count, r, c);
+        for (const t of targets) affected.add(`${t.row},${t.col}`);
+        // 연출(궤적)용으로 마지막 발동의 목표 목록을 기록
+        this._lastPropellerTargets = targets;
         break;
       }
       default:
@@ -210,39 +213,48 @@ export class Board {
   }
 
   /**
-   * 프로펠러가 유도할 목표 우선순위:
-   *   1) 명시된 미션 좌표
-   *   2) 남아있는 젤리 칸 (미션 젤리 제거 지원)
-   *   3) 미션 색 타일
-   *   4) 임의 타일
+   * 프로펠러가 유도할 목표 N곳을 우선순위대로 고른다 (중복 없이):
+   *   1) 남아있는 젤리 칸 (미션 젤리 제거 지원)
+   *   2) 미션 색 타일
+   *   3) 임의 타일
+   * @param {object} ctx {missionColor}
+   * @param {number} count 목표 개수
+   * @param {number} sr 발동 위치(제외 대상)
+   * @param {number} sc
+   * @returns {{row:number,col:number}[]}
    */
-  _propellerTarget(ctx) {
-    if (ctx.missionRow != null && ctx.missionCol != null) {
-      return { row: ctx.missionRow, col: ctx.missionCol };
-    }
-    // 젤리 우선
-    const jellyCells = [];
+  _propellerTargets(ctx, count, sr, sc) {
+    const used = new Set([`${sr},${sc}`]);
+    const pickFrom = (cells) => {
+      // 이미 고른 칸 제외 후 무작위 셔플
+      const pool = cells.filter(k => !used.has(`${k.row},${k.col}`));
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      return pool;
+    };
+    const jelly = [], colorCells = [], any = [];
     for (let r = 0; r < BOARD_ROWS; r++)
-      for (let c = 0; c < BOARD_COLS; c++)
-        if (this.jelly[r][c] > 0) jellyCells.push({ row: r, col: c });
-    if (jellyCells.length) return jellyCells[(Math.random() * jellyCells.length) | 0];
+      for (let c = 0; c < BOARD_COLS; c++) {
+        if (this.jelly[r][c] > 0) jelly.push({ row: r, col: c });
+        if (ctx.missionColor != null && this.grid[r][c] && this.grid[r][c].color === ctx.missionColor)
+          colorCells.push({ row: r, col: c });
+        if (this.grid[r][c]) any.push({ row: r, col: c });
+      }
 
-    // 미션 색 타일
-    if (ctx.missionColor != null) {
-      const colorCells = [];
-      for (let r = 0; r < BOARD_ROWS; r++)
-        for (let c = 0; c < BOARD_COLS; c++)
-          if (this.grid[r][c] && this.grid[r][c].color === ctx.missionColor)
-            colorCells.push({ row: r, col: c });
-      if (colorCells.length) return colorCells[(Math.random() * colorCells.length) | 0];
+    const result = [];
+    for (const tier of [jelly, colorCells, any]) {
+      for (const cell of pickFrom(tier)) {
+        if (result.length >= count) break;
+        const key = `${cell.row},${cell.col}`;
+        if (used.has(key)) continue;
+        used.add(key);
+        result.push(cell);
+      }
+      if (result.length >= count) break;
     }
-
-    const candidates = [];
-    for (let r = 0; r < BOARD_ROWS; r++)
-      for (let c = 0; c < BOARD_COLS; c++)
-        if (this.grid[r][c]) candidates.push({ row: r, col: c });
-    if (!candidates.length) return null;
-    return candidates[(Math.random() * candidates.length) | 0];
+    return result;
   }
 
   /**
