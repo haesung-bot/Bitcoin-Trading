@@ -175,4 +175,9 @@ export const FX = Object.freeze({
   SHAKE_CASCADE_STEP: 2.5,  // 연쇄 단계당 흔들림 증가
   COMBO_BANNER_SEC: 2.4,    // 콤보 메시지(배너) 표시 지속시간(초)
   COMBO_FLOATER_SEC: 1.6,   // 콤보 점수 텍스트 지속시간(초)
+  // 프로펠러 ✈ 비행 속도 (클수록 천천히)
+  PROPELLER_FLY_PER_TILE: 0.11, // 칸당 비행 시간(초)
+  PROPELLER_FLY_MIN: 0.7,       // 최소 비행 시간(초)
+  PROPELLER_FLY_MAX: 1.4,       // 최대 비행 시간(초)
+  PROPELLER_TRAIL_SEC: 0.45,    // 트레일 잔상 유지 시간(초)
 });

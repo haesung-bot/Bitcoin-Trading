@@ -112,9 +112,10 @@ export class Effects {
   _spawnFlyer(fromR, fromC, toR, toC) {
     const fromX = cellCenterX(fromC), fromY = cellCenterY(fromR);
     const toX = cellCenterX(toC), toY = cellCenterY(toR);
-    // 거리에 비례한 비행 시간 (한 칸당 대략 0.04초, 0.28~0.5초 범위)
+    // 거리에 비례한 비행 시간 (천천히). 속도는 Constants.FX에서 조절.
     const dist = Math.hypot(toX - fromX, toY - fromY);
-    const dur = Math.min(0.5, Math.max(0.28, dist / TILE_SIZE * 0.05));
+    const dur = Math.min(FX.PROPELLER_FLY_MAX,
+      Math.max(FX.PROPELLER_FLY_MIN, dist / TILE_SIZE * FX.PROPELLER_FLY_PER_TILE));
     this.flyers.push({
       fromX, fromY, toX, toY, x: fromX, y: fromY,
       t: 0, dur, trail: [], arrived: false,
@@ -241,7 +242,7 @@ export class Effects {
         }
       }
       for (const p of f.trail) p.age += dt;
-      f.trail = f.trail.filter(p => p.age < 0.3);
+      f.trail = f.trail.filter(p => p.age < FX.PROPELLER_TRAIL_SEC);
     }
     this.flyers = this.flyers.filter(f => f.t < 1 || f.trail.length > 0);
   }
@@ -286,7 +287,7 @@ export class Effects {
     for (const f of this.flyers) {
       // 트레일 점들
       for (const p of f.trail) {
-        const a = Math.max(0, 1 - p.age / 0.3);
+        const a = Math.max(0, 1 - p.age / FX.PROPELLER_TRAIL_SEC);
         ctx.save();
         ctx.globalAlpha = a * 0.7;
         ctx.fillStyle = '#9ff0c0';
