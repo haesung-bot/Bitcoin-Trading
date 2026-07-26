@@ -19,6 +19,7 @@ export class Effects {
     this.beams = [];       // 로켓 광선
     this.rings = [];       // 폭발/충격파 링
     this.flashes = [];     // 전체 섬광(라이트볼/콤보)
+    this.banners = [];     // 콤보 메시지 배너 (오래 표시)
     this.shakeTime = 0;    // 남은 흔들림 시간
     this.shakeMag = 0;     // 흔들림 강도
     this.intensity = FX.GLOBAL_INTENSITY; // 전역 연출 세기 (Constants.FX에서 튜닝)
@@ -77,21 +78,33 @@ export class Effects {
     }
     for (const s of fx.specials) this._specialFx(s);
 
+    let label, color;
     if (fx.combo === 'LIGHTBALL_LIGHTBALL') {
       this._flash('rgba(255,255,255,0.9)', 0.5);
       this.shake(FX.SHAKE_COMBO_LIGHTBALL, 0.5);
+      label = '⚡ 라이트볼 콤보!'; color = '#ffffff';
     } else if (fx.combo === 'ROCKET_BOMB') {
       this._flash('rgba(255,210,63,0.5)', 0.35);
       this.shake(FX.SHAKE_COMBO_ROCKETBOMB, 0.45);
       // 발동 지점 기준 십자 광선
       this.beams.push(makeBeam(fx.at.row, fx.at.col, RocketDir.HORIZONTAL, '#ffd23f'));
       this.beams.push(makeBeam(fx.at.row, fx.at.col, RocketDir.VERTICAL, '#ffd23f'));
+      label = '🚀💣 로켓 + 폭탄!'; color = '#ffd23f';
     } else {
       this.shake(FX.SHAKE_COMBO_ROCKETBOMB * 0.8, 0.35);
+      label = '💥 콤보!'; color = '#ffd23f';
     }
+    // 콤보 메시지 배너 (오래 표시)
+    this._banner(label, color);
+    // 콤보 점수 텍스트 (일반보다 오래 유지)
     if (fx.score > 0) {
-      this._floater(cellCenterX(fx.at.col), cellCenterY(fx.at.row), `+${fx.score}`, 3, true);
+      this._floater(cellCenterX(fx.at.col), cellCenterY(fx.at.row), `+${fx.score}`, 3, true, FX.COMBO_FLOATER_SEC);
     }
+  }
+
+  /** 콤보 배너 메시지 (화면 중앙 상단, 길게 표시) */
+  _banner(text, color) {
+    this.banners.push({ text, color, life: FX.COMBO_BANNER_SEC, max: FX.COMBO_BANNER_SEC });
   }
 
   /** 특수타일 종류별 시각 연출 */
@@ -138,11 +151,11 @@ export class Effects {
     }
   }
 
-  _floater(x, y, text, cascade, big = false) {
+  _floater(x, y, text, cascade, big = false, life = 0.9) {
     this.floaters.push({
       x, y, text,
       vy: -46,
-      life: 0.9, max: 0.9,
+      life, max: life,
       size: big ? 30 : (16 + Math.min(cascade, 5) * 3),
       color: cascade >= 3 ? '#ffd23f' : '#ffffff',
     });
@@ -191,6 +204,9 @@ export class Effects {
 
     for (const fl of this.flashes) fl.life -= dt;
     this.flashes = this.flashes.filter(fl => fl.life > 0);
+
+    for (const bn of this.banners) bn.life -= dt;
+    this.banners = this.banners.filter(bn => bn.life > 0);
   }
 
   /** 보드/타일 위에 겹쳐 그린다 (renderer가 흔들림 변환 안에서 호출) */
@@ -258,7 +274,7 @@ export class Effects {
     }
   }
 
-  /** 전체 화면 섬광 (흔들림 변환 밖에서, 캔버스 좌표로 그린다) */
+  /** 전체 화면 섬광 + 콤보 배너 (흔들림 변환 밖에서, 캔버스 좌표로 그린다) */
   drawOverlay(ctx, w, h) {
     for (const fl of this.flashes) {
       ctx.save();
@@ -267,6 +283,29 @@ export class Effects {
       ctx.fillRect(0, 0, w, h);
       ctx.restore();
     }
+
+    // 콤보 배너 (여러 개면 아래로 쌓임). 등장 팝 + 마지막 0.5초 페이드.
+    this.banners.forEach((bn, i) => {
+      const t = 1 - bn.life / bn.max;              // 0 -> 1 경과
+      const appear = Math.min(1, t / 0.12);         // 등장 이징
+      const alpha = bn.life < 0.5 ? bn.life / 0.5 : 1;
+      const scale = 0.7 + 0.3 * appear;
+      const cx = w / 2;
+      const cy = h * 0.3 + i * 46;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, alpha);
+      ctx.translate(cx, cy);
+      ctx.scale(scale, scale);
+      ctx.font = 'bold 40px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 7;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.strokeText(bn.text, 0, 0);
+      ctx.fillStyle = bn.color;
+      ctx.fillText(bn.text, 0, 0);
+      ctx.restore();
+    });
   }
 }
 

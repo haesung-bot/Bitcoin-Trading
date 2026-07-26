@@ -16,14 +16,23 @@ export class Renderer {
     this.effects = effects;      // 연출 레이어 (선택)
     this.selected = null;        // 강조 표시할 타일
 
+    this._resizeToBoard();
+  }
+
+  /** 현재 보드 칸 수에 맞춰 캔버스 픽셀 크기를 맞춘다 (10x10 확장 대응) */
+  _resizeToBoard() {
     const w = BOARD_PADDING * 2 + BOARD_COLS * TILE_SIZE;
     const h = BOARD_PADDING * 2 + BOARD_ROWS * TILE_SIZE;
-    canvas.width = w;
-    canvas.height = h;
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width = w;
+      this.canvas.height = h;
+    }
   }
 
   draw() {
     const ctx = this.ctx;
+    // 보드 크기가 바뀌었으면(스테이지 확장) 캔버스 재조정
+    this._resizeToBoard();
     const { width, height } = this.canvas;
 
     // 배경 (흔들림 영향 없음 — 전체를 채워 가장자리 노출 방지)

@@ -3,9 +3,29 @@
 //  (게임 밸런스 값은 전부 여기서 관리 -> 기획 변경 시 이 파일만 수정)
 // =============================================================
 
-/** 보드 크기 (가로 x 세로 칸 수) */
-export const BOARD_COLS = 8;
-export const BOARD_ROWS = 8;
+/**
+ * 보드 크기 (가로 x 세로 칸 수).
+ * const 이 아니라 let 으로 두어, ES 모듈 라이브 바인딩을 통해
+ * setBoardSize()로 런타임에 바꾸면 이 값을 참조하는 모든 코드가 즉시 따라간다.
+ * (스테이지 진행에 따라 8x8 -> 10x10 확장에 사용)
+ */
+export let BOARD_COLS = 8;
+export let BOARD_ROWS = 8;
+
+/** 보드 확장 규칙: 이 스테이지를 넘어서면 큰 보드 */
+export const BOARD_GROW_STAGE = 20;   // 20스테이지 이후
+export const BIG_BOARD = 10;          // 10x10
+export const SMALL_BOARD = 8;         // 기본 8x8
+
+/** 런타임 보드 크기 변경 (라이브 바인딩 갱신) */
+export function setBoardSize(rows, cols) {
+  BOARD_ROWS = rows;
+  BOARD_COLS = cols;
+}
+/** 스테이지에 맞는 보드 한 변 크기 */
+export function boardSizeForStage(stage) {
+  return stage > BOARD_GROW_STAGE ? BIG_BOARD : SMALL_BOARD;
+}
 
 /** 타일 한 칸의 픽셀 크기 & 여백 */
 export const TILE_SIZE = 72;
@@ -143,4 +163,6 @@ export const FX = Object.freeze({
   SHAKE_COMBO_ROCKETBOMB: 12,
   SHAKE_COMBO_LIGHTBALL: 14,
   SHAKE_CASCADE_STEP: 2.5,  // 연쇄 단계당 흔들림 증가
+  COMBO_BANNER_SEC: 2.4,    // 콤보 메시지(배너) 표시 지속시간(초)
+  COMBO_FLOATER_SEC: 1.6,   // 콤보 점수 텍스트 지속시간(초)
 });

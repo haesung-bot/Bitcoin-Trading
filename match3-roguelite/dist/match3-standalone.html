@@ -38,7 +38,7 @@
     #time { font-variant-numeric: tabular-nums; }
     .icon-btn { background: var(--panel); border: none; color: #e8ecf7; border-radius: 10px; padding: 8px 12px; font-size: 18px; cursor: pointer; }
     .icon-btn:hover { background: #232e52; }
-    #game { border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.5); touch-action: none; }
+    #game { border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.5); touch-action: none; max-width: 100%; height: auto; }
     #log { font-size: 12px; opacity: .8; min-height: 40px; width: 100%; max-width: 420px; }
     #log div { padding: 2px 0; }
     /* 퍽 선택 오버레이 */
@@ -56,6 +56,7 @@
       display: flex; flex-direction: column; gap: 10px; transition: .15s;
     }
     .perk-card:hover { border-color: var(--accent); transform: translateY(-4px); }
+    .perk-card .perk-icon { font-size: 34px; line-height: 1; }
     .perk-card strong { font-size: 16px; color: var(--accent); }
     .perk-card span { font-size: 13px; opacity: .85; }
     /* 스테이지 클리어 결과 화면 */
@@ -135,9 +136,29 @@
 //  (게임 밸런스 값은 전부 여기서 관리 -> 기획 변경 시 이 파일만 수정)
 // =============================================================
 
-/** 보드 크기 (가로 x 세로 칸 수) */
-const BOARD_COLS = 8;
-const BOARD_ROWS = 8;
+/**
+ * 보드 크기 (가로 x 세로 칸 수).
+ * const 이 아니라 let 으로 두어, ES 모듈 라이브 바인딩을 통해
+ * setBoardSize()로 런타임에 바꾸면 이 값을 참조하는 모든 코드가 즉시 따라간다.
+ * (스테이지 진행에 따라 8x8 -> 10x10 확장에 사용)
+ */
+let BOARD_COLS = 8;
+let BOARD_ROWS = 8;
+
+/** 보드 확장 규칙: 이 스테이지를 넘어서면 큰 보드 */
+const BOARD_GROW_STAGE = 20;   // 20스테이지 이후
+const BIG_BOARD = 10;          // 10x10
+const SMALL_BOARD = 8;         // 기본 8x8
+
+/** 런타임 보드 크기 변경 (라이브 바인딩 갱신) */
+function setBoardSize(rows, cols) {
+  BOARD_ROWS = rows;
+  BOARD_COLS = cols;
+}
+/** 스테이지에 맞는 보드 한 변 크기 */
+function boardSizeForStage(stage) {
+  return stage > BOARD_GROW_STAGE ? BIG_BOARD : SMALL_BOARD;
+}
 
 /** 타일 한 칸의 픽셀 크기 & 여백 */
 const TILE_SIZE = 72;
@@ -275,6 +296,8 @@ const FX = Object.freeze({
   SHAKE_COMBO_ROCKETBOMB: 12,
   SHAKE_COMBO_LIGHTBALL: 14,
   SHAKE_CASCADE_STEP: 2.5,  // 연쇄 단계당 흔들림 증가
+  COMBO_BANNER_SEC: 2.4,    // 콤보 메시지(배너) 표시 지속시간(초)
+  COMBO_FLOATER_SEC: 1.6,   // 콤보 점수 텍스트 지속시간(초)
 });
 
 
@@ -759,6 +782,25 @@ class Board {
     return n;
   }
 
+  /**
+   * 무작위 일반 타일 하나를 무작위 특수타일로 바꾼다 (퍽: 행운의 시작).
+   * @returns {boolean} 배치 성공 여부
+   */
+  placeRandomSpecial() {
+    const normals = [];
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++)
+        if (this.grid[r][c] && !this.grid[r][c].isSpecial) normals.push(this.grid[r][c]);
+    if (!normals.length) return false;
+    const t = normals[(Math.random() * normals.length) | 0];
+    const kinds = [SpecialType.ROCKET, SpecialType.BOMB, SpecialType.PROPELLER];
+    t.special = kinds[(Math.random() * kinds.length) | 0];
+    if (t.special === SpecialType.ROCKET) {
+      t.rocketDir = Math.random() < 0.5 ? RocketDir.HORIZONTAL : RocketDir.VERTICAL;
+    }
+    return true;
+  }
+
   hasJelly(r, c) { return this.inBounds(r, c) && this.jelly[r][c] > 0; }
 
   /** 해당 칸의 젤리를 한 겹 제거. @returns {boolean} 실제로 제거했으면 true */
@@ -859,9 +901,10 @@ class Board {
         break;
       }
       case SpecialType.BOMB: {
-        // 3x3 반경
-        for (let dr = -1; dr <= 1; dr++) {
-          for (let dc = -1; dc <= 1; dc++) {
+        // 반경 rad (기본 1=3x3, 퍽으로 2=5x5). ctx.bombRadius로 확장.
+        const rad = Math.max(1, ctx.bombRadius || 1);
+        for (let dr = -rad; dr <= rad; dr++) {
+          for (let dc = -rad; dc <= rad; dc++) {
             const rr = r + dr, cc = c + dc;
             if (this.inBounds(rr, cc)) affected.add(`${rr},${cc}`);
           }
@@ -1129,10 +1172,15 @@ class GameEngine {
 
     // 퍽(패시브) 효과 누적치 — PerkSystem이 채운다
     this.perks = {
-      bombRangeBonus: 0,     // +N (3x3 -> (3+2N)x(3+2N) 식으로 확장 가능)
       extraMoveOn4: 0,       // 4콤보 생성 시 이동 +N
       scoreMultiplier: 1,
       _startMovesBonus: 0,   // 스테이지 시작 이동 보너스
+      // 타임어택/보드 관련 신규 퍽
+      bombRadius: 1,         // 폭탄 반경 (1=3x3, 2=5x5)
+      comboBonusExtra: 0,    // 콤보 시간 보너스 추가(초)
+      cascadeTimeMult: 1,    // 연쇄 시간 보너스 배율
+      clearCredit: 0,        // 스테이지 클리어 시 기록 시간 감면(초)
+      startSpecials: 0,      // 스테이지 시작 시 배치할 랜덤 특수타일 수
     };
 
     // --- 스왑/연쇄 처리용 임시 상태 ---
@@ -1147,17 +1195,25 @@ class GameEngine {
     this._buildStateMachine();
   }
 
-  /** 새 스테이지 준비: 보드 리셋 + 미션 생성 + 젤리 시딩 + 이동/타이머 초기화 */
+  /** 새 스테이지 준비: 보드 크기/리셋 + 미션 생성 + 젤리 시딩 + 이동/타이머 초기화 */
   _startStage() {
+    // 스테이지에 맞춰 보드 크기 결정 (20스테이지 이후 10x10). reset 전에 설정.
+    const size = boardSizeForStage(this.stage);
+    setBoardSize(size, size);
     this.board.reset();
+
     this.score = 0;
     this.cascadeLevel = 0;
     this.stageTime = 0;      // 스테이지마다 스톱워치 리셋
     this.movesLeft = STAGE_DEFAULTS.BASE_MOVES + (this.perks._startMovesBonus || 0);
     this.mission = MissionSystem.forStage(this.stage);
     if (this.mission.seedJelly) this.board.seedJelly(this.mission.seedJelly);
+
+    // 퍽: 스테이지 시작 시 랜덤 특수타일 배치
+    for (let i = 0; i < (this.perks.startSpecials || 0); i++) this.board.placeRandomSpecial();
+
     this._syncMissionProgress();
-    this._emit({ type: 'mission', mission: this.mission, stage: this.stage });
+    this._emit({ type: 'mission', mission: this.mission, stage: this.stage, boardSize: size });
   }
 
   /** 미션 진행도를 현재 보드 상태에 맞춰 동기화 */
@@ -1281,7 +1337,7 @@ class GameEngine {
 
           // 4-2) 스피드 보너스: 깊은 연쇄 + 특수타일 생성 시 시간 되감기
           let bonus = 0;
-          if (this.cascadeLevel >= 2) bonus += TIME_BONUS.CASCADE_STEP * (this.cascadeLevel - 1);
+          if (this.cascadeLevel >= 2) bonus += TIME_BONUS.CASCADE_STEP * (this.cascadeLevel - 1) * this.perks.cascadeTimeMult;
           if ((m.spawns || []).length > 0) bonus += TIME_BONUS.SPECIAL_CREATE;
           if (bonus > 0) this._applyTimeBonus(bonus, cells);
 
@@ -1427,8 +1483,11 @@ class GameEngine {
       activated.add(t.id);
       // 연출용: 발동 순간의 특수타일 위치/종류 기록
       if (fxOut) fxOut.push({ type: t.special, row: t.row, col: t.col, rocketDir: t.rocketDir, color: t.color });
-      // 프로펠러 유도 목표로 미션 색을 넘긴다 (젤리 > 미션색 > 임의 순)
-      const affected = this.board.activateSpecial(t, { missionColor: this.mission ? this.mission.color : null });
+      // 프로펠러 유도 목표(미션색)와 폭탄 반경(퍽) 전달
+      const affected = this.board.activateSpecial(t, {
+        missionColor: this.mission ? this.mission.color : null,
+        bombRadius: this.perks.bombRadius,
+      });
       for (const key of affected) {
         result.add(key);
         const [r, c] = key.split(',').map(Number);
@@ -1532,9 +1591,9 @@ class GameEngine {
     }
 
     this._consumeMove();
-    // 콤보 스피드 보너스 (조합별 차등)
-    const comboBonus = bothLightBall ? TIME_BONUS.COMBO_LIGHTBALL
-      : rocketBomb ? TIME_BONUS.COMBO_ROCKETBOMB : TIME_BONUS.COMBO_OTHER;
+    // 콤보 스피드 보너스 (조합별 차등 + 퍽 추가분)
+    const comboBonus = (bothLightBall ? TIME_BONUS.COMBO_LIGHTBALL
+      : rocketBomb ? TIME_BONUS.COMBO_ROCKETBOMB : TIME_BONUS.COMBO_OTHER) + this.perks.comboBonusExtra;
     this._applyTimeBonus(comboBonus, { row: a.row, col: a.col });
     const fxSpecials = [];
     const expanded = this._expandSpecials(cells, fxSpecials);
@@ -1566,6 +1625,8 @@ class GameEngine {
 
   _onStageClear() {
     const cleared = this.stage;
+    // 퍽: 클리어 기록 시간 감면
+    if (this.perks.clearCredit > 0) this.stageTime = Math.max(0, this.stageTime - this.perks.clearCredit);
     this._lastClearTime = this.stageTime;
     // 결과 화면을 위해 진행을 멈추고 '계속' 입력을 기다린다 (타이머 정지)
     this.awaitingContinue = true;
@@ -1626,41 +1687,48 @@ class GameEngine {
  * apply()는 engine.perks 수치를 조정한다 (GameEngine이 실제 효과 반영).
  */
 const PERK_POOL = [
+  // --- 타임어택 특화 (신규) ---
   {
-    id: 'bomb_range',
-    name: '강화 화약',
-    desc: '폭탄 폭발 범위 +15%',
-    apply: (engine) => { engine.perks.bombRangeBonus += 0.15; },
+    id: 'combo_boost', name: '콤보 증폭기', icon: '💥', repeatable: true,
+    desc: '콤보 시간 보너스 +1초',
+    apply: (engine) => { engine.perks.comboBonusExtra += 1; },
   },
   {
-    id: 'extra_move_4combo',
-    name: '전술적 여유',
+    id: 'cascade_speed', name: '연쇄 가속', icon: '⚡', repeatable: true,
+    desc: '연쇄 시간 보너스 +50%',
+    apply: (engine) => { engine.perks.cascadeTimeMult += 0.5; },
+  },
+  {
+    id: 'time_saver', name: '기록 단축', icon: '⏱️', repeatable: true,
+    desc: '스테이지 클리어 시 기록 -1.5초',
+    apply: (engine) => { engine.perks.clearCredit += 1.5; },
+  },
+  // --- 보드/특수타일 (신규) ---
+  {
+    id: 'big_bomb', name: '대형 폭탄', icon: '💣', repeatable: true,
+    desc: '폭탄 폭발 범위 확대 (최대 7x7)',
+    apply: (engine) => { engine.perks.bombRadius = Math.min(3, engine.perks.bombRadius + 1); },
+  },
+  {
+    id: 'lucky_special', name: '행운의 시작', icon: '🍀', repeatable: true,
+    desc: '스테이지 시작 시 특수타일 +1개',
+    apply: (engine) => { engine.perks.startSpecials += 1; },
+  },
+  // --- 기존 ---
+  {
+    id: 'extra_move_4combo', name: '전술적 여유', icon: '🎯', repeatable: true,
     desc: '4콤보 생성 시 이동 +1',
     apply: (engine) => { engine.perks.extraMoveOn4 += 1; },
   },
   {
-    id: 'score_boost',
-    name: '점수 증폭기',
+    id: 'score_boost', name: '점수 증폭기', icon: '📈', repeatable: true,
     desc: '획득 점수 +20%',
     apply: (engine) => { engine.perks.scoreMultiplier += 0.2; },
   },
   {
-    id: 'starting_moves',
-    name: '넉넉한 준비',
+    id: 'starting_moves', name: '넉넉한 준비', icon: '➕', repeatable: true,
     desc: '스테이지 시작 이동 +3',
-    apply: (engine) => { engine.perks._startMovesBonus = (engine.perks._startMovesBonus || 0) + 3; engine.movesLeft += 3; },
-  },
-  {
-    id: 'cascade_master',
-    name: '연쇄의 달인',
-    desc: '연쇄 보너스 점수 2배',
-    apply: (engine) => { engine.perks.scoreMultiplier += 0.15; },
-  },
-  {
-    id: 'lucky_rocket',
-    name: '행운의 로켓',
-    desc: '4콤보 생성 시 이동 +1 (중첩)',
-    apply: (engine) => { engine.perks.extraMoveOn4 += 1; },
+    apply: (engine) => { engine.perks._startMovesBonus += 3; engine.movesLeft += 3; },
   },
 ];
 
@@ -1894,6 +1962,7 @@ class Effects {
     this.beams = [];       // 로켓 광선
     this.rings = [];       // 폭발/충격파 링
     this.flashes = [];     // 전체 섬광(라이트볼/콤보)
+    this.banners = [];     // 콤보 메시지 배너 (오래 표시)
     this.shakeTime = 0;    // 남은 흔들림 시간
     this.shakeMag = 0;     // 흔들림 강도
     this.intensity = FX.GLOBAL_INTENSITY; // 전역 연출 세기 (Constants.FX에서 튜닝)
@@ -1952,21 +2021,33 @@ class Effects {
     }
     for (const s of fx.specials) this._specialFx(s);
 
+    let label, color;
     if (fx.combo === 'LIGHTBALL_LIGHTBALL') {
       this._flash('rgba(255,255,255,0.9)', 0.5);
       this.shake(FX.SHAKE_COMBO_LIGHTBALL, 0.5);
+      label = '⚡ 라이트볼 콤보!'; color = '#ffffff';
     } else if (fx.combo === 'ROCKET_BOMB') {
       this._flash('rgba(255,210,63,0.5)', 0.35);
       this.shake(FX.SHAKE_COMBO_ROCKETBOMB, 0.45);
       // 발동 지점 기준 십자 광선
       this.beams.push(makeBeam(fx.at.row, fx.at.col, RocketDir.HORIZONTAL, '#ffd23f'));
       this.beams.push(makeBeam(fx.at.row, fx.at.col, RocketDir.VERTICAL, '#ffd23f'));
+      label = '🚀💣 로켓 + 폭탄!'; color = '#ffd23f';
     } else {
       this.shake(FX.SHAKE_COMBO_ROCKETBOMB * 0.8, 0.35);
+      label = '💥 콤보!'; color = '#ffd23f';
     }
+    // 콤보 메시지 배너 (오래 표시)
+    this._banner(label, color);
+    // 콤보 점수 텍스트 (일반보다 오래 유지)
     if (fx.score > 0) {
-      this._floater(cellCenterX(fx.at.col), cellCenterY(fx.at.row), `+${fx.score}`, 3, true);
+      this._floater(cellCenterX(fx.at.col), cellCenterY(fx.at.row), `+${fx.score}`, 3, true, FX.COMBO_FLOATER_SEC);
     }
+  }
+
+  /** 콤보 배너 메시지 (화면 중앙 상단, 길게 표시) */
+  _banner(text, color) {
+    this.banners.push({ text, color, life: FX.COMBO_BANNER_SEC, max: FX.COMBO_BANNER_SEC });
   }
 
   /** 특수타일 종류별 시각 연출 */
@@ -2013,11 +2094,11 @@ class Effects {
     }
   }
 
-  _floater(x, y, text, cascade, big = false) {
+  _floater(x, y, text, cascade, big = false, life = 0.9) {
     this.floaters.push({
       x, y, text,
       vy: -46,
-      life: 0.9, max: 0.9,
+      life, max: life,
       size: big ? 30 : (16 + Math.min(cascade, 5) * 3),
       color: cascade >= 3 ? '#ffd23f' : '#ffffff',
     });
@@ -2066,6 +2147,9 @@ class Effects {
 
     for (const fl of this.flashes) fl.life -= dt;
     this.flashes = this.flashes.filter(fl => fl.life > 0);
+
+    for (const bn of this.banners) bn.life -= dt;
+    this.banners = this.banners.filter(bn => bn.life > 0);
   }
 
   /** 보드/타일 위에 겹쳐 그린다 (renderer가 흔들림 변환 안에서 호출) */
@@ -2133,7 +2217,7 @@ class Effects {
     }
   }
 
-  /** 전체 화면 섬광 (흔들림 변환 밖에서, 캔버스 좌표로 그린다) */
+  /** 전체 화면 섬광 + 콤보 배너 (흔들림 변환 밖에서, 캔버스 좌표로 그린다) */
   drawOverlay(ctx, w, h) {
     for (const fl of this.flashes) {
       ctx.save();
@@ -2142,6 +2226,29 @@ class Effects {
       ctx.fillRect(0, 0, w, h);
       ctx.restore();
     }
+
+    // 콤보 배너 (여러 개면 아래로 쌓임). 등장 팝 + 마지막 0.5초 페이드.
+    this.banners.forEach((bn, i) => {
+      const t = 1 - bn.life / bn.max;              // 0 -> 1 경과
+      const appear = Math.min(1, t / 0.12);         // 등장 이징
+      const alpha = bn.life < 0.5 ? bn.life / 0.5 : 1;
+      const scale = 0.7 + 0.3 * appear;
+      const cx = w / 2;
+      const cy = h * 0.3 + i * 46;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, alpha);
+      ctx.translate(cx, cy);
+      ctx.scale(scale, scale);
+      ctx.font = 'bold 40px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 7;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.strokeText(bn.text, 0, 0);
+      ctx.fillStyle = bn.color;
+      ctx.fillText(bn.text, 0, 0);
+      ctx.restore();
+    });
   }
 }
 
@@ -2173,14 +2280,23 @@ class Renderer {
     this.effects = effects;      // 연출 레이어 (선택)
     this.selected = null;        // 강조 표시할 타일
 
+    this._resizeToBoard();
+  }
+
+  /** 현재 보드 칸 수에 맞춰 캔버스 픽셀 크기를 맞춘다 (10x10 확장 대응) */
+  _resizeToBoard() {
     const w = BOARD_PADDING * 2 + BOARD_COLS * TILE_SIZE;
     const h = BOARD_PADDING * 2 + BOARD_ROWS * TILE_SIZE;
-    canvas.width = w;
-    canvas.height = h;
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width = w;
+      this.canvas.height = h;
+    }
   }
 
   draw() {
     const ctx = this.ctx;
+    // 보드 크기가 바뀌었으면(스테이지 확장) 캔버스 재조정
+    this._resizeToBoard();
     const { width, height } = this.canvas;
 
     // 배경 (흔들림 영향 없음 — 전체를 채워 가장자리 노출 방지)
@@ -2637,7 +2753,7 @@ function showPerkSelection() {
   choices.forEach((perk) => {
     const btn = document.createElement('button');
     btn.className = 'perk-card';
-    btn.innerHTML = `<strong>${perk.name}</strong><span>${perk.desc}</span>`;
+    btn.innerHTML = `<div class="perk-icon">${perk.icon || '✨'}</div><strong>${perk.name}</strong><span>${perk.desc}</span>`;
     btn.onclick = () => {
       perkSystem.choose(perk, engine);
       perkOverlay.classList.add('hidden');

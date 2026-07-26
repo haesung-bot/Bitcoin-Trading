@@ -9,7 +9,10 @@
 //    CHECK_GAME_OVER ──> IDLE(계속) 또는 게임종료 콜백
 // =============================================================
 
-import { GameState, SpecialType, STAGE_DEFAULTS, SCORE, TIMING, MissionType, TIME_BONUS } from './Constants.js';
+import {
+  GameState, SpecialType, STAGE_DEFAULTS, SCORE, TIMING, MissionType, TIME_BONUS,
+  setBoardSize, boardSizeForStage,
+} from './Constants.js';
 import { Board } from './Board.js';
 import { StateMachine } from './StateMachine.js';
 import { MatchDetector } from './MatchDetector.js';
@@ -42,10 +45,15 @@ export class GameEngine {
 
     // 퍽(패시브) 효과 누적치 — PerkSystem이 채운다
     this.perks = {
-      bombRangeBonus: 0,     // +N (3x3 -> (3+2N)x(3+2N) 식으로 확장 가능)
       extraMoveOn4: 0,       // 4콤보 생성 시 이동 +N
       scoreMultiplier: 1,
       _startMovesBonus: 0,   // 스테이지 시작 이동 보너스
+      // 타임어택/보드 관련 신규 퍽
+      bombRadius: 1,         // 폭탄 반경 (1=3x3, 2=5x5)
+      comboBonusExtra: 0,    // 콤보 시간 보너스 추가(초)
+      cascadeTimeMult: 1,    // 연쇄 시간 보너스 배율
+      clearCredit: 0,        // 스테이지 클리어 시 기록 시간 감면(초)
+      startSpecials: 0,      // 스테이지 시작 시 배치할 랜덤 특수타일 수
     };
 
     // --- 스왑/연쇄 처리용 임시 상태 ---
@@ -60,17 +68,25 @@ export class GameEngine {
     this._buildStateMachine();
   }
 
-  /** 새 스테이지 준비: 보드 리셋 + 미션 생성 + 젤리 시딩 + 이동/타이머 초기화 */
+  /** 새 스테이지 준비: 보드 크기/리셋 + 미션 생성 + 젤리 시딩 + 이동/타이머 초기화 */
   _startStage() {
+    // 스테이지에 맞춰 보드 크기 결정 (20스테이지 이후 10x10). reset 전에 설정.
+    const size = boardSizeForStage(this.stage);
+    setBoardSize(size, size);
     this.board.reset();
+
     this.score = 0;
     this.cascadeLevel = 0;
     this.stageTime = 0;      // 스테이지마다 스톱워치 리셋
     this.movesLeft = STAGE_DEFAULTS.BASE_MOVES + (this.perks._startMovesBonus || 0);
     this.mission = MissionSystem.forStage(this.stage);
     if (this.mission.seedJelly) this.board.seedJelly(this.mission.seedJelly);
+
+    // 퍽: 스테이지 시작 시 랜덤 특수타일 배치
+    for (let i = 0; i < (this.perks.startSpecials || 0); i++) this.board.placeRandomSpecial();
+
     this._syncMissionProgress();
-    this._emit({ type: 'mission', mission: this.mission, stage: this.stage });
+    this._emit({ type: 'mission', mission: this.mission, stage: this.stage, boardSize: size });
   }
 
   /** 미션 진행도를 현재 보드 상태에 맞춰 동기화 */
@@ -194,7 +210,7 @@ export class GameEngine {
 
           // 4-2) 스피드 보너스: 깊은 연쇄 + 특수타일 생성 시 시간 되감기
           let bonus = 0;
-          if (this.cascadeLevel >= 2) bonus += TIME_BONUS.CASCADE_STEP * (this.cascadeLevel - 1);
+          if (this.cascadeLevel >= 2) bonus += TIME_BONUS.CASCADE_STEP * (this.cascadeLevel - 1) * this.perks.cascadeTimeMult;
           if ((m.spawns || []).length > 0) bonus += TIME_BONUS.SPECIAL_CREATE;
           if (bonus > 0) this._applyTimeBonus(bonus, cells);
 
@@ -340,8 +356,11 @@ export class GameEngine {
       activated.add(t.id);
       // 연출용: 발동 순간의 특수타일 위치/종류 기록
       if (fxOut) fxOut.push({ type: t.special, row: t.row, col: t.col, rocketDir: t.rocketDir, color: t.color });
-      // 프로펠러 유도 목표로 미션 색을 넘긴다 (젤리 > 미션색 > 임의 순)
-      const affected = this.board.activateSpecial(t, { missionColor: this.mission ? this.mission.color : null });
+      // 프로펠러 유도 목표(미션색)와 폭탄 반경(퍽) 전달
+      const affected = this.board.activateSpecial(t, {
+        missionColor: this.mission ? this.mission.color : null,
+        bombRadius: this.perks.bombRadius,
+      });
       for (const key of affected) {
         result.add(key);
         const [r, c] = key.split(',').map(Number);
@@ -445,9 +464,9 @@ export class GameEngine {
     }
 
     this._consumeMove();
-    // 콤보 스피드 보너스 (조합별 차등)
-    const comboBonus = bothLightBall ? TIME_BONUS.COMBO_LIGHTBALL
-      : rocketBomb ? TIME_BONUS.COMBO_ROCKETBOMB : TIME_BONUS.COMBO_OTHER;
+    // 콤보 스피드 보너스 (조합별 차등 + 퍽 추가분)
+    const comboBonus = (bothLightBall ? TIME_BONUS.COMBO_LIGHTBALL
+      : rocketBomb ? TIME_BONUS.COMBO_ROCKETBOMB : TIME_BONUS.COMBO_OTHER) + this.perks.comboBonusExtra;
     this._applyTimeBonus(comboBonus, { row: a.row, col: a.col });
     const fxSpecials = [];
     const expanded = this._expandSpecials(cells, fxSpecials);
@@ -479,6 +498,8 @@ export class GameEngine {
 
   _onStageClear() {
     const cleared = this.stage;
+    // 퍽: 클리어 기록 시간 감면
+    if (this.perks.clearCredit > 0) this.stageTime = Math.max(0, this.stageTime - this.perks.clearCredit);
     this._lastClearTime = this.stageTime;
     // 결과 화면을 위해 진행을 멈추고 '계속' 입력을 기다린다 (타이머 정지)
     this.awaitingContinue = true;

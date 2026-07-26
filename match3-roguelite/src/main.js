@@ -228,7 +228,7 @@ function showPerkSelection() {
   choices.forEach((perk) => {
     const btn = document.createElement('button');
     btn.className = 'perk-card';
-    btn.innerHTML = `<strong>${perk.name}</strong><span>${perk.desc}</span>`;
+    btn.innerHTML = `<div class="perk-icon">${perk.icon || '✨'}</div><strong>${perk.name}</strong><span>${perk.desc}</span>`;
     btn.onclick = () => {
       perkSystem.choose(perk, engine);
       perkOverlay.classList.add('hidden');

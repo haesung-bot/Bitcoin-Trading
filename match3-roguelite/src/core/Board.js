@@ -54,6 +54,25 @@ export class Board {
     return n;
   }
 
+  /**
+   * 무작위 일반 타일 하나를 무작위 특수타일로 바꾼다 (퍽: 행운의 시작).
+   * @returns {boolean} 배치 성공 여부
+   */
+  placeRandomSpecial() {
+    const normals = [];
+    for (let r = 0; r < BOARD_ROWS; r++)
+      for (let c = 0; c < BOARD_COLS; c++)
+        if (this.grid[r][c] && !this.grid[r][c].isSpecial) normals.push(this.grid[r][c]);
+    if (!normals.length) return false;
+    const t = normals[(Math.random() * normals.length) | 0];
+    const kinds = [SpecialType.ROCKET, SpecialType.BOMB, SpecialType.PROPELLER];
+    t.special = kinds[(Math.random() * kinds.length) | 0];
+    if (t.special === SpecialType.ROCKET) {
+      t.rocketDir = Math.random() < 0.5 ? RocketDir.HORIZONTAL : RocketDir.VERTICAL;
+    }
+    return true;
+  }
+
   hasJelly(r, c) { return this.inBounds(r, c) && this.jelly[r][c] > 0; }
 
   /** 해당 칸의 젤리를 한 겹 제거. @returns {boolean} 실제로 제거했으면 true */
@@ -154,9 +173,10 @@ export class Board {
         break;
       }
       case SpecialType.BOMB: {
-        // 3x3 반경
-        for (let dr = -1; dr <= 1; dr++) {
-          for (let dc = -1; dc <= 1; dc++) {
+        // 반경 rad (기본 1=3x3, 퍽으로 2=5x5). ctx.bombRadius로 확장.
+        const rad = Math.max(1, ctx.bombRadius || 1);
+        for (let dr = -rad; dr <= rad; dr++) {
+          for (let dc = -rad; dc <= rad; dc++) {
             const rr = r + dr, cc = c + dc;
             if (this.inBounds(rr, cc)) affected.add(`${rr},${cc}`);
           }

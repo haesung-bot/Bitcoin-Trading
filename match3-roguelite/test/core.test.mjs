@@ -288,5 +288,39 @@ console.log('\n[20] 타이머 일시정지 시 시간이 흐르지 않음');
   assert(engine.stageTime > 0, '재개 후 시간 진행');
 }
 
+console.log('\n[21] 20스테이지 이후 보드 10x10 확장');
+{
+  const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
+  engine.stage = 21;
+  engine._startStage();
+  assert(engine.board.grid.length === 10 && engine.board.grid[0].length === 10, '스테이지21 -> 10x10 보드');
+  assert(!MatchDetector.hasAnyMatch(engine.board), '확장 보드도 초기 매치 없음');
+  // 8x8로 복귀 확인 (전역 상태 원복)
+  engine.stage = 1;
+  engine._startStage();
+  assert(engine.board.grid.length === 8, '낮은 스테이지 -> 8x8 복귀');
+}
+
+console.log('\n[22] 신규 퍽: 대형 폭탄 반경 확대 & 콤보 보너스 추가');
+{
+  const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
+  // 대형 폭탄: bombRadius 1 -> 2, 폭탄 발동 시 5x5(25칸)
+  engine.perks.bombRadius = 2;
+  setBoard(engine.board, uniformExcept());
+  const bomb = engine.board.grid[4][4];
+  bomb.special = SpecialType.BOMB;
+  const affected = engine.board.activateSpecial(bomb, { bombRadius: engine.perks.bombRadius });
+  assert(affected.size === 25, `5x5 폭탄 -> 25칸 (got ${affected.size})`);
+  // 콤보 보너스 추가 퍽
+  engine.perks.comboBonusExtra = 2;
+  engine.stageTime = 20;
+  const a = engine.board.grid[2][2], b2 = engine.board.grid[2][3];
+  a.special = SpecialType.LIGHT_BALL; b2.special = SpecialType.LIGHT_BALL;
+  const before = engine.stageTime;
+  engine._triggerCombo(a, b2);
+  // 라이트볼 콤보 3.0 + 추가 2.0 = 5.0초 차감
+  assert(before - engine.stageTime >= 5, `콤보 보너스 5초↑ 차감 (${(before - engine.stageTime).toFixed(1)})`);
+}
+
 console.log(`\n===== 결과: ${pass} 통과 / ${fail} 실패 =====`);
 process.exit(fail === 0 ? 0 : 1);
