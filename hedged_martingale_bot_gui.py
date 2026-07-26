@@ -58,13 +58,10 @@ class HedgedMartingaleGUI:
     # ───────────── UI 구성 ─────────────
     def _build_widgets(self) -> None:
         info = (
-            f"거래소: Gate.io 선물({core.SYMBOL}) / 레버리지: {core.LEVERAGE}x / "
-            f"1차진입 마진: 잔고의 {core.INITIAL_MARGIN_PCT * 100:.0f}%\n"
-            f"마틴게일: 평단가 대비 {core.STEP_TRIGGER_PCT * 100:.1f}%마다 1→2→4→8배 추가 진입, "
-            f"+{core.TP_PCT * 100:.1f}% 익절\n"
-            f"4단계(8배) 후 추가 {core.STEP_TRIGGER_PCT * 100:.1f}% 역행 시 하드손절 / 청산 후 "
-            f"{core.COOLDOWN_SEC // 60}분 쿨다운\n"
-            f"연속손절 {core.MAX_CONSECUTIVE_SL}회 발생 시 해당 방향(롱/숏) 자동 정지"
+            f"거래소: Gate.io 선물({core.SYMBOL}) / 레버리지: {core.LEVERAGE}x (양방향 Hedge Mode)\n"
+            "포지션 크기 %: 잔고 대비 진입 마진 비율(예: 2 → 레버리지 포함 명목가치는 잔고의 20%)\n"
+            "익절 %: 평단가 대비 이만큼 유리하게 움직이면 전량 익절\n"
+            "손절 %: 평단가 대비 이만큼 불리하게 움직일 때마다 1→2→4→8배 물타기, 4단계 후 한 번 더 시 하드손절"
         )
         tk.Label(self.root, text=info, justify="left", fg="#333").pack(anchor="w", padx=12, pady=(10, 6))
 
@@ -73,25 +70,39 @@ class HedgedMartingaleGUI:
 
         tk.Label(form, text="Gate.io API Key").grid(row=0, column=0, sticky="w", pady=3)
         self.api_key_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.api_key_var, width=50).grid(row=0, column=1, pady=3, sticky="we")
+        tk.Entry(form, textvariable=self.api_key_var, width=50).grid(row=0, column=1, columnspan=3, pady=3, sticky="we")
 
         tk.Label(form, text="Gate.io API Secret").grid(row=1, column=0, sticky="w", pady=3)
         self.api_secret_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.api_secret_var, width=50, show="*").grid(row=1, column=1, pady=3, sticky="we")
+        tk.Entry(form, textvariable=self.api_secret_var, width=50, show="*").grid(row=1, column=1, columnspan=3, pady=3, sticky="we")
 
         tk.Label(form, text="텔레그램 봇 토큰(선택)").grid(row=2, column=0, sticky="w", pady=3)
         self.tg_token_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.tg_token_var, width=50).grid(row=2, column=1, pady=3, sticky="we")
+        tk.Entry(form, textvariable=self.tg_token_var, width=50).grid(row=2, column=1, columnspan=3, pady=3, sticky="we")
 
         tk.Label(form, text="텔레그램 Chat ID(선택)").grid(row=3, column=0, sticky="w", pady=3)
         self.tg_chat_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.tg_chat_var, width=50).grid(row=3, column=1, pady=3, sticky="we")
+        tk.Entry(form, textvariable=self.tg_chat_var, width=50).grid(row=3, column=1, columnspan=3, pady=3, sticky="we")
+
+        # ── 전략 설정(%) ──
+        tk.Label(form, text="포지션 크기 %").grid(row=4, column=0, sticky="w", pady=3)
+        self.pos_pct_var = tk.StringVar(value=f"{core.INITIAL_MARGIN_PCT * 100:g}")
+        tk.Entry(form, textvariable=self.pos_pct_var, width=10).grid(row=4, column=1, pady=3, sticky="w")
+
+        tk.Label(form, text="익절 %").grid(row=4, column=2, sticky="e", padx=(10, 4), pady=3)
+        self.tp_pct_var = tk.StringVar(value=f"{core.TP_PCT * 100:g}")
+        tk.Entry(form, textvariable=self.tp_pct_var, width=10).grid(row=4, column=3, pady=3, sticky="w")
+
+        tk.Label(form, text="손절 %").grid(row=5, column=0, sticky="w", pady=3)
+        self.sl_pct_var = tk.StringVar(value=f"{core.STEP_TRIGGER_PCT * 100:g}")
+        tk.Entry(form, textvariable=self.sl_pct_var, width=10).grid(row=5, column=1, pady=3, sticky="w")
 
         form.columnconfigure(1, weight=1)
+        form.columnconfigure(3, weight=1)
 
-        # 4개 입력값(Key/Secret/토큰/ChatID)은 타이핑할 때마다 자동 저장되어,
-        # 프로그램을 강제 종료해도 다음 실행 시 그대로 남아있는다.
-        for var in (self.api_key_var, self.api_secret_var, self.tg_token_var, self.tg_chat_var):
+        # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
+        for var in (self.api_key_var, self.api_secret_var, self.tg_token_var, self.tg_chat_var,
+                    self.pos_pct_var, self.tp_pct_var, self.sl_pct_var):
             var.trace_add("write", self._schedule_save)
 
         btn_frame = tk.Frame(self.root)
@@ -153,6 +164,12 @@ class HedgedMartingaleGUI:
             self.api_secret_var.set(data.get("api_secret", ""))
             self.tg_token_var.set(data.get("tg_token", ""))
             self.tg_chat_var.set(data.get("tg_chat", ""))
+            if data.get("pos_pct"):
+                self.pos_pct_var.set(str(data["pos_pct"]))
+            if data.get("tp_pct"):
+                self.tp_pct_var.set(str(data["tp_pct"]))
+            if data.get("sl_pct"):
+                self.sl_pct_var.set(str(data["sl_pct"]))
         except Exception:
             pass
 
@@ -165,17 +182,27 @@ class HedgedMartingaleGUI:
                         "api_secret": self.api_secret_var.get().strip(),
                         "tg_token": self.tg_token_var.get().strip(),
                         "tg_chat": self.tg_chat_var.get().strip(),
+                        "pos_pct": self.pos_pct_var.get().strip(),
+                        "tp_pct": self.tp_pct_var.get().strip(),
+                        "sl_pct": self.sl_pct_var.get().strip(),
                     },
                     f,
                 )
         except Exception as e:
-            self._log(f"자격증명 저장 실패: {e}")
+            self._log(f"설정 저장 실패: {e}")
 
     def _schedule_save(self, *_args) -> None:
         """입력칸이 바뀔 때마다 호출되며, 타이핑이 잠시 멈춘 뒤(500ms) 한 번만 저장한다."""
         if self._save_after_id is not None:
             self.root.after_cancel(self._save_after_id)
         self._save_after_id = self.root.after(500, self._save_credentials)
+
+    def _parse_pct(self, text: str, name: str) -> float:
+        """'2', '0.3' 같은 퍼센트 입력을 소수(0.02, 0.003)로 변환. 잘못된 값이면 ValueError."""
+        value = float(text.strip())
+        if value <= 0:
+            raise ValueError(f"{name}는 0보다 커야 합니다.")
+        return value / 100.0
 
     # ───────────── 시작/정지 ─────────────
     def _on_start_clicked(self) -> None:
@@ -185,9 +212,25 @@ class HedgedMartingaleGUI:
             messagebox.showerror("입력 오류", "Gate.io API Key와 Secret을 입력하세요.")
             return
 
+        # 전략 % 값 검증 및 적용
+        try:
+            pos_pct = self._parse_pct(self.pos_pct_var.get(), "포지션 크기 %")
+            tp_pct = self._parse_pct(self.tp_pct_var.get(), "익절 %")
+            sl_pct = self._parse_pct(self.sl_pct_var.get(), "손절 %")
+        except ValueError as e:
+            messagebox.showerror("입력 오류", f"포지션/익절/손절 %는 0보다 큰 숫자여야 합니다.\n({e})")
+            return
+
+        core.INITIAL_MARGIN_PCT = pos_pct
+        core.TP_PCT = tp_pct
+        core.STEP_TRIGGER_PCT = sl_pct
+
         self._save_credentials()
         core.TELEGRAM_BOT_TOKEN = self.tg_token_var.get().strip()
         core.TELEGRAM_CHAT_ID = self.tg_chat_var.get().strip()
+        self._log(
+            f"전략 설정 적용: 포지션 크기 {pos_pct*100:g}% / 익절 {tp_pct*100:g}% / 손절 {sl_pct*100:g}%"
+        )
 
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")

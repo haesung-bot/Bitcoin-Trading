@@ -27,7 +27,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "2026-07-24-e (자동동기화+상태초기화+버전표시)"
+VERSION = "2026-07-26-f (포지션/익절/손절 % 설정)"
 
 import argparse
 import json
