@@ -61,7 +61,8 @@ class HedgedMartingaleGUI:
             f"거래소: Gate.io 선물({core.SYMBOL}) / 레버리지: {core.LEVERAGE}x (양방향 Hedge Mode)\n"
             "포지션 크기 %: 잔고 대비 진입 마진 비율(예: 2 → 레버리지 포함 명목가치는 잔고의 20%)\n"
             "익절 %: 평단가 대비 이만큼 유리하게 움직이면 전량 익절\n"
-            "손절 %: 평단가 대비 이만큼 불리하게 움직일 때마다 1→2→4→8배 물타기, 4단계 후 한 번 더 시 하드손절"
+            "물타기 간격 %: 평단가 대비 이만큼 불리하게 갈 때마다 1→2→4→8배 추가 진입(최대 4단계)\n"
+            "손절 %: 평단가 대비 이만큼 불리해지면 단계와 무관하게 전량 손절 (물타기 간격보다 크게 설정)"
         )
         tk.Label(self.root, text=info, justify="left", fg="#333").pack(anchor="w", padx=12, pady=(10, 6))
 
@@ -93,16 +94,20 @@ class HedgedMartingaleGUI:
         self.tp_pct_var = tk.StringVar(value=f"{core.TP_PCT * 100:g}")
         tk.Entry(form, textvariable=self.tp_pct_var, width=10).grid(row=4, column=3, pady=3, sticky="w")
 
-        tk.Label(form, text="손절 %").grid(row=5, column=0, sticky="w", pady=3)
-        self.sl_pct_var = tk.StringVar(value=f"{core.STEP_TRIGGER_PCT * 100:g}")
-        tk.Entry(form, textvariable=self.sl_pct_var, width=10).grid(row=5, column=1, pady=3, sticky="w")
+        tk.Label(form, text="물타기 간격 %").grid(row=5, column=0, sticky="w", pady=3)
+        self.step_pct_var = tk.StringVar(value=f"{core.STEP_TRIGGER_PCT * 100:g}")
+        tk.Entry(form, textvariable=self.step_pct_var, width=10).grid(row=5, column=1, pady=3, sticky="w")
+
+        tk.Label(form, text="손절 %").grid(row=5, column=2, sticky="e", padx=(10, 4), pady=3)
+        self.sl_pct_var = tk.StringVar(value=f"{core.STOP_LOSS_PCT * 100:g}")
+        tk.Entry(form, textvariable=self.sl_pct_var, width=10).grid(row=5, column=3, pady=3, sticky="w")
 
         form.columnconfigure(1, weight=1)
         form.columnconfigure(3, weight=1)
 
         # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
         for var in (self.api_key_var, self.api_secret_var, self.tg_token_var, self.tg_chat_var,
-                    self.pos_pct_var, self.tp_pct_var, self.sl_pct_var):
+                    self.pos_pct_var, self.tp_pct_var, self.step_pct_var, self.sl_pct_var):
             var.trace_add("write", self._schedule_save)
 
         btn_frame = tk.Frame(self.root)
@@ -168,6 +173,8 @@ class HedgedMartingaleGUI:
                 self.pos_pct_var.set(str(data["pos_pct"]))
             if data.get("tp_pct"):
                 self.tp_pct_var.set(str(data["tp_pct"]))
+            if data.get("step_pct"):
+                self.step_pct_var.set(str(data["step_pct"]))
             if data.get("sl_pct"):
                 self.sl_pct_var.set(str(data["sl_pct"]))
         except Exception:
@@ -184,6 +191,7 @@ class HedgedMartingaleGUI:
                         "tg_chat": self.tg_chat_var.get().strip(),
                         "pos_pct": self.pos_pct_var.get().strip(),
                         "tp_pct": self.tp_pct_var.get().strip(),
+                        "step_pct": self.step_pct_var.get().strip(),
                         "sl_pct": self.sl_pct_var.get().strip(),
                     },
                     f,
@@ -216,20 +224,31 @@ class HedgedMartingaleGUI:
         try:
             pos_pct = self._parse_pct(self.pos_pct_var.get(), "포지션 크기 %")
             tp_pct = self._parse_pct(self.tp_pct_var.get(), "익절 %")
+            step_pct = self._parse_pct(self.step_pct_var.get(), "물타기 간격 %")
             sl_pct = self._parse_pct(self.sl_pct_var.get(), "손절 %")
         except ValueError as e:
-            messagebox.showerror("입력 오류", f"포지션/익절/손절 %는 0보다 큰 숫자여야 합니다.\n({e})")
+            messagebox.showerror("입력 오류", f"포지션/익절/물타기 간격/손절 %는 0보다 큰 숫자여야 합니다.\n({e})")
+            return
+
+        if sl_pct <= step_pct:
+            messagebox.showerror(
+                "입력 오류",
+                f"손절 %({sl_pct*100:g}%)는 물타기 간격 %({step_pct*100:g}%)보다 커야 합니다.\n"
+                "손절이 물타기 간격보다 작거나 같으면 물타기 없이 바로 손절됩니다.",
+            )
             return
 
         core.INITIAL_MARGIN_PCT = pos_pct
         core.TP_PCT = tp_pct
-        core.STEP_TRIGGER_PCT = sl_pct
+        core.STEP_TRIGGER_PCT = step_pct
+        core.STOP_LOSS_PCT = sl_pct
 
         self._save_credentials()
         core.TELEGRAM_BOT_TOKEN = self.tg_token_var.get().strip()
         core.TELEGRAM_CHAT_ID = self.tg_chat_var.get().strip()
         self._log(
-            f"전략 설정 적용: 포지션 크기 {pos_pct*100:g}% / 익절 {tp_pct*100:g}% / 손절 {sl_pct*100:g}%"
+            f"전략 설정 적용: 포지션 크기 {pos_pct*100:g}% / 익절 {tp_pct*100:g}% / "
+            f"물타기 간격 {step_pct*100:g}% / 손절 {sl_pct*100:g}%"
         )
 
         self.start_btn.config(state="disabled")

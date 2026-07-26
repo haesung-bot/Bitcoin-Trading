@@ -5,6 +5,9 @@ hedged_martingale_bot.py
 - 기본 실행 모드: 모의 매매(Paper Trading). 실거래는 --live 옵션 + API 키가 있을 때만 동작.
 - 기본 거래소는 Gate.io 무기한 선물(USDT-M swap). EXCHANGE_ID 환경변수로 다른 ccxt 지원 거래소로 변경 가능.
 - 롱/숏은 완전히 독립된 상태머신(MartingaleModule)이며 서로의 진입/청산에 영향을 주지 않는다.
+- 물타기 간격(STEP_TRIGGER_PCT)과 손절(STOP_LOSS_PCT)은 독립: 평단가 대비 STEP_TRIGGER_PCT마다
+  1→2→4→8배 추가 진입(최대 MAX_STEPS단계)하고, 평단가 대비 STOP_LOSS_PCT에 도달하면 단계와
+  무관하게 전량 손절한다. 익절은 평단가 대비 +TP_PCT.
 - 시세(15분봉 종가)는 실제 매매할 거래소(EXCHANGE_ID)에서 ccxt 공개 API로 직접 가져온다(인증 불필요).
 - 실거래 시에만 ccxt로 Hedge Mode(Gate.io는 Dual Mode) + 레버리지 10배를 계좌에 설정한다.
 - Gate.io Dual Mode는 매수/매도 방향이 곧 롱/숏 슬롯을 가리키고, 청산 주문에만 reduceOnly를 붙인다.
@@ -27,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "2026-07-26-f (포지션/익절/손절 % 설정)"
+VERSION = "2026-07-26-g (물타기 간격/손절 분리 설정)"
 
 import argparse
 import json
@@ -71,8 +74,9 @@ SYMBOL = os.environ.get("SYMBOL", "BTC/USDT:USDT")
 TIMEFRAME = "15m"
 LEVERAGE = 10
 INITIAL_MARGIN_PCT = 0.02       # 1차 진입 마진 = 계좌 잔고의 2%
-STEP_TRIGGER_PCT = 0.003        # 평단가 대비 0.3% 역방향 이동 시 물타기/손절 트리거
+STEP_TRIGGER_PCT = 0.003        # 평단가 대비 0.3% 역방향 이동마다 물타기(추가 진입) 트리거
 TP_PCT = 0.003                  # 평단가 대비 0.3% 순방향 이동 시 익절
+STOP_LOSS_PCT = 0.02            # 평단가 대비 2% 역방향 이동 시 전량 하드손절(물타기 간격과 독립)
 MAX_STEPS = 4                   # 1배 -> 2배 -> 4배 -> 8배
 COOLDOWN_SEC = 180              # 청산 후 재진입 대기 3분
 MAX_CONSECUTIVE_SL = int(os.environ.get("MAX_CONSECUTIVE_SL", "3"))  # 연속 손절 N회 시 해당 방향 자동 정지
@@ -504,15 +508,19 @@ class MartingaleModule:
 
         pnl_pct = self._pnl_pct(price)
 
+        # 익절: 평단가 대비 +TP_PCT
         if pnl_pct >= TP_PCT:
             self._take_profit(price)
             return
 
-        if pnl_pct <= -STEP_TRIGGER_PCT:
-            if self.step < MAX_STEPS:
-                self._add_martingale(price)
-            else:
-                self._stop_loss(price)
+        # 손절: 평단가 대비 -STOP_LOSS_PCT (물타기 단계와 무관하게 전량 청산)
+        if pnl_pct <= -STOP_LOSS_PCT:
+            self._stop_loss(price)
+            return
+
+        # 물타기: 아직 최대 단계가 아니고 평단가 대비 -STEP_TRIGGER_PCT 이상 빠졌을 때
+        if self.step < MAX_STEPS and pnl_pct <= -STEP_TRIGGER_PCT:
+            self._add_martingale(price)
 
     def _recalc_avg(self) -> None:
         self.total_qty = sum(f.qty for f in self.fills)
