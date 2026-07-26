@@ -161,10 +161,10 @@ export const JELLY = Object.freeze({
 
 /**
  * 프로펠러 기본 타격 목표 수.
- * 미션 타일(색/젤리)을 우선 노린다 -> 미션 클리어용 도구로 확실히 작동.
- * '정밀 유도' 퍽으로 추가 증가.
+ * 미션 타일(색/젤리)을 우선 노린다. '정밀 유도' 퍽으로 1개씩 증가.
+ * (기본 2 -> 너무 쉽게 클리어되지 않도록 낮춤)
  */
-export const PROPELLER_BASE_TARGETS = 3;
+export const PROPELLER_BASE_TARGETS = 2;
 
 /**
  * 연출 튜닝 — 세기/개수를 여기서 한 번에 조절.

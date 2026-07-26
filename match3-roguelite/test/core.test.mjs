@@ -367,18 +367,17 @@ console.log('\n[25] 프로펠러가 미션 색 타일을 우선 타깃 (노랑 �
 {
   const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
   setBoard(engine.board, uniformExcept());
-  // 노랑(3) 타일 3개만 심기
-  engine.board.grid[0][0].color = TileColor.YELLOW;
-  engine.board.grid[7][7].color = TileColor.YELLOW;
-  engine.board.grid[0][7].color = TileColor.YELLOW;
+  // 노랑(3) 타일을 기본 목표보다 넉넉히 심기
+  [[0, 0], [7, 7], [0, 7], [7, 0]].forEach(([r, c]) => { engine.board.grid[r][c].color = TileColor.YELLOW; });
   engine.mission = { type: MissionType.COLLECT, color: TileColor.YELLOW, target: 20, progress: 0, label: '노랑' };
   const prop = engine.board.grid[4][4];
   prop.special = SpecialType.PROPELLER;
   const fx = [];
   engine._expandSpecials(new Set(['4,4']), fx);
   const targets = fx.find(f => f.type === SpecialType.PROPELLER).targets;
-  const yellowHit = targets.filter(t => engine.board.grid[t.row][t.col] && engine.board.grid[t.row][t.col].color === TileColor.YELLOW).length;
-  assert(yellowHit === 3, `노랑 타일 3개 모두 타깃 (got ${yellowHit})`);
+  assert(targets.length === PROPELLER_BASE_TARGETS, `기본 목표 ${PROPELLER_BASE_TARGETS}개 (got ${targets.length})`);
+  const allYellow = targets.every(t => engine.board.grid[t.row][t.col] && engine.board.grid[t.row][t.col].color === TileColor.YELLOW);
+  assert(allYellow, '모든 목표가 노랑(미션 색) 타일');
 }
 
 console.log(`\n===== 결과: ${pass} 통과 / ${fail} 실패 =====`);
