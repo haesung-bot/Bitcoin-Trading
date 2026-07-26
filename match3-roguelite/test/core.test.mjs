@@ -2,7 +2,7 @@
 import { Board } from '../src/core/Board.js';
 import { MatchDetector } from '../src/core/MatchDetector.js';
 import { GameEngine } from '../src/core/GameEngine.js';
-import { TileColor, SpecialType, RocketDir, MissionType } from '../src/core/Constants.js';
+import { TileColor, SpecialType, RocketDir, MissionType, PROPELLER_BASE_TARGETS } from '../src/core/Constants.js';
 import { Tile } from '../src/core/Tile.js';
 import { MissionSystem } from '../src/systems/MissionSystem.js';
 
@@ -348,18 +348,37 @@ console.log('\n[23] 프로펠러 다중 목표 (퍽 +N) & 젤리 우선');
   assert(keys2.has('0,0') && keys2.has('7,7'), '젤리 칸이 우선 목표로 선정됨');
 }
 
-console.log('\n[24] 정밀 유도 퍽 -> propellerTargets 증가 & 실제 목표 수 반영');
+console.log('\n[24] 프로펠러 기본 목표 수 + 정밀 유도 퍽 증가');
 {
   const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
   assert(engine.perks.propellerTargets === 0, '기본 추가 목표 0');
-  engine.perks.propellerTargets = 2; // 퍽 2회 획득 가정 -> 총 3목표
+  engine.perks.propellerTargets = 2; // 퍽 2회 -> 기본 + 2
   setBoard(engine.board, uniformExcept());
   const prop = engine.board.grid[4][4];
   prop.special = SpecialType.PROPELLER;
   const fx = [];
   engine._expandSpecials(new Set(['4,4']), fx);
   const pfx = fx.find(f => f.type === SpecialType.PROPELLER);
-  assert(pfx && pfx.targets && pfx.targets.length === 3, `연출용 목표 3개 첨부 (got ${pfx && pfx.targets && pfx.targets.length})`);
+  const expected = PROPELLER_BASE_TARGETS + 2;
+  assert(pfx && pfx.targets && pfx.targets.length === expected, `목표 ${expected}개 첨부 (got ${pfx && pfx.targets && pfx.targets.length})`);
+}
+
+console.log('\n[25] 프로펠러가 미션 색 타일을 우선 타깃 (노랑 미션)');
+{
+  const engine = new GameEngine({ onStateChange: () => {}, onEvent: () => {}, onFx: () => {} });
+  setBoard(engine.board, uniformExcept());
+  // 노랑(3) 타일 3개만 심기
+  engine.board.grid[0][0].color = TileColor.YELLOW;
+  engine.board.grid[7][7].color = TileColor.YELLOW;
+  engine.board.grid[0][7].color = TileColor.YELLOW;
+  engine.mission = { type: MissionType.COLLECT, color: TileColor.YELLOW, target: 20, progress: 0, label: '노랑' };
+  const prop = engine.board.grid[4][4];
+  prop.special = SpecialType.PROPELLER;
+  const fx = [];
+  engine._expandSpecials(new Set(['4,4']), fx);
+  const targets = fx.find(f => f.type === SpecialType.PROPELLER).targets;
+  const yellowHit = targets.filter(t => engine.board.grid[t.row][t.col] && engine.board.grid[t.row][t.col].color === TileColor.YELLOW).length;
+  assert(yellowHit === 3, `노랑 타일 3개 모두 타깃 (got ${yellowHit})`);
 }
 
 console.log(`\n===== 결과: ${pass} 통과 / ${fail} 실패 =====`);

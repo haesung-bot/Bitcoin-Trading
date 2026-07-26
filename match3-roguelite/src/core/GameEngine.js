@@ -11,7 +11,7 @@
 
 import {
   GameState, SpecialType, STAGE_DEFAULTS, SCORE, TIMING, MissionType, TIME_BONUS,
-  setBoardSize, boardSizeForStage,
+  setBoardSize, boardSizeForStage, PROPELLER_BASE_TARGETS,
 } from './Constants.js';
 import { Board } from './Board.js';
 import { StateMachine } from './StateMachine.js';
@@ -362,7 +362,7 @@ export class GameEngine {
       const affected = this.board.activateSpecial(t, {
         missionColor: this.mission ? this.mission.color : null,
         bombRadius: this.perks.bombRadius,
-        propellerTargets: 1 + this.perks.propellerTargets,
+        propellerTargets: PROPELLER_BASE_TARGETS + this.perks.propellerTargets,
       });
       // 프로펠러면 방금 고른 목표들을 궤적 연출용으로 첨부
       if (t.special === SpecialType.PROPELLER && fxOut) {

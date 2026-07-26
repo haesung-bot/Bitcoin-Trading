@@ -293,6 +293,13 @@ const JELLY = Object.freeze({
 });
 
 /**
+ * 프로펠러 기본 타격 목표 수.
+ * 미션 타일(색/젤리)을 우선 노린다 -> 미션 클리어용 도구로 확실히 작동.
+ * '정밀 유도' 퍽으로 추가 증가.
+ */
+const PROPELLER_BASE_TARGETS = 3;
+
+/**
  * 연출 튜닝 — 세기/개수를 여기서 한 번에 조절.
  * 값을 키우면 화려하게, 줄이면 차분하게.
  */
@@ -1516,7 +1523,7 @@ class GameEngine {
       const affected = this.board.activateSpecial(t, {
         missionColor: this.mission ? this.mission.color : null,
         bombRadius: this.perks.bombRadius,
-        propellerTargets: 1 + this.perks.propellerTargets,
+        propellerTargets: PROPELLER_BASE_TARGETS + this.perks.propellerTargets,
       });
       // 프로펠러면 방금 고른 목표들을 궤적 연출용으로 첨부
       if (t.special === SpecialType.PROPELLER && fxOut) {
