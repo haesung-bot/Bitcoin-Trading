@@ -53,7 +53,7 @@ export const PERK_POOL = [
   },
   {
     id: 'starting_moves', name: '넉넉한 준비', icon: '➕', repeatable: true,
-    desc: '스테이지 시작 이동 +3',
+    desc: '스테이지 시작 MOVES+3',
     apply: (engine) => { engine.perks._startMovesBonus += 3; engine.movesLeft += 3; },
   },
 ];
