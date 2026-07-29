@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>냉장고 요리사 - 있는 재료로 뭐 해먹지?</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🍳</text></svg>">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="hero">
+  <h1>🍳 냉장고 요리사</h1>
+  <p>집에 있는 재료만 입력하면, 지금 바로 만들 수 있는 요리를 찾아드립니다.</p>
+  <p class="hero-sub">현재 {{ recipe_count }}개 레시피 보유</p>
+</header>
+
+<main class="container">
+
+  <section class="panel">
+    <label class="label" for="ingredient-input">냉장고에 있는 재료</label>
+    <div class="input-row">
+      <input
+        id="ingredient-input"
+        type="text"
+        placeholder="예) 김치, 계란, 밥  (엔터 또는 쉼표로 추가)"
+        autocomplete="off"
+        list="ingredient-list">
+      <datalist id="ingredient-list"></datalist>
+      <button id="add-btn" class="btn-add" type="button">추가</button>
+    </div>
+
+    <div id="chips" class="chips"></div>
+
+    <div class="quick-picks">
+      <span class="quick-label">자주 쓰는 재료</span>
+      <div id="quick-buttons"></div>
+    </div>
+
+    <div class="options">
+      <label class="opt">
+        <input type="checkbox" id="use-staples" checked>
+        <span>기본 양념(소금·간장·고추장 등)은 있는 걸로 치기</span>
+      </label>
+
+      <div class="opt-row">
+        <label class="opt-inline">
+          <span>부족해도 괜찮은 재료</span>
+          <select id="max-missing">
+            <option value="0">0개 (바로 가능한 요리만)</option>
+            <option value="1">1개까지</option>
+            <option value="2" selected>2개까지</option>
+          </select>
+        </label>
+
+        <label class="opt-inline">
+          <span>종류</span>
+          <select id="category">
+            <option value="">전체</option>
+            {% for c in categories %}
+            <option value="{{ c }}">{{ c }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="opt-inline">
+          <span>조리시간</span>
+          <select id="max-time">
+            <option value="">제한 없음</option>
+            <option value="15">15분 이내</option>
+            <option value="20">20분 이내</option>
+            <option value="30">30분 이내</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="search-btn" class="btn-primary" type="button">요리 찾기</button>
+      <button id="clear-btn" class="btn-ghost" type="button">전체 지우기</button>
+    </div>
+  </section>
+
+  <section id="summary" class="summary hidden"></section>
+  <section id="shopping" class="shopping hidden"></section>
+  <section id="results" class="results"></section>
+
+</main>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-box">
+    <button class="modal-close" type="button" data-close="1">✕</button>
+    <div id="modal-content"></div>
+  </div>
+</div>
+
+<footer class="footer">재료를 많이 넣을수록 추천이 정확해집니다.</footer>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
