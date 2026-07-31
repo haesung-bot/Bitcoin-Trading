@@ -353,6 +353,23 @@ class XcoinTestCase(unittest.TestCase):
         self.client.post("/admin/points/adjust", json=body, headers=headers)
         self.assertEqual(points.get_balance(USER)["points"], 500)
 
+    def test_트랜잭션_해시에_0x가_붙는다(self):
+        """web3 버전에 따라 0x 가 빠지면 익스플로러 링크와 재조회가 깨진다."""
+        from xcoin.server import chain
+        self.assertEqual(chain.normalize_tx_hash(b"\xab\xcd"), "0xabcd")
+        self.assertEqual(chain.normalize_tx_hash("abcd"), "0xabcd")
+        self.assertEqual(chain.normalize_tx_hash("0xabcd"), "0xabcd")
+
+        self._earn(5000)
+        self.link_wallet()
+        conv = self.client.post("/exchange/convert",
+                                json={"user_id": USER, "points": 2000,
+                                      "idempotency_key": "hash-1"},
+                                headers=self.auth_headers()).get_json()
+        exchange.process_pending_payouts()
+        after = exchange.get_conversion(conv["id"])
+        self.assertTrue(after["tx_hash"].startswith("0x"), after["tx_hash"])
+
     # ================= 계산 =================
 
     def test_포인트_코인_환산이_정확하다(self):

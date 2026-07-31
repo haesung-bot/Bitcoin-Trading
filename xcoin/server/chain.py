@@ -53,6 +53,22 @@ class ChainError(Exception):
     pass
 
 
+def normalize_tx_hash(value) -> str:
+    """
+    트랜잭션 해시를 항상 '0x...' 형태로 맞춘다.
+
+    web3 버전에 따라 HexBytes.hex() 가 0x 를 붙이기도 하고 안 붙이기도 한다.
+    0x 가 빠지면 익스플로러 링크가 깨지고 나중에 영수증을 다시 조회할 때도 막힌다.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        text = value.hex()
+    else:
+        text = str(value)
+    if not text.startswith("0x"):
+        text = "0x" + text
+    return text
+
+
 # nonce 충돌을 막기 위해 전송은 한 번에 하나씩만 한다.
 _send_lock = threading.Lock()
 _w3 = None
@@ -171,7 +187,7 @@ def send_xcoin(to_address: str, amount_wei: int, ref: str) -> str:
         signed = _account.sign_transaction(built)
         raw = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction")
         tx_hash = _w3.eth.send_raw_transaction(raw)
-        return tx_hash.hex()
+        return normalize_tx_hash(tx_hash)
 
 
 def wait_for_receipt(tx_hash: str, timeout: int = 180) -> dict:

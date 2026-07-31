@@ -11,3 +11,7 @@ contracts/test/XCoin.json
 __pycache__/
 *.pyc
 .env
+
+# 배포 기록에는 주소만 들어가므로 커밋해도 되지만,
+# 로컬 테스트 기록이 섞이지 않게 기본은 제외합니다.
+contracts/deployments/

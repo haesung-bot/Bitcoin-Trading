@@ -59,7 +59,7 @@ curl -X POST http://localhost:8080/admin/games \
 python xcoin/tests/test_xcoin.py
 ```
 
-31개 테스트가 돕니다. 대부분 "이상한 요청을 제대로 막는지" 확인하는 것들입니다.
+32개 테스트가 돕니다. 대부분 "이상한 요청을 제대로 막는지" 확인하는 것들입니다.
 
 ---
 
@@ -78,8 +78,13 @@ xcoin/
 │   ├── admin.py       운영자 API
 │   └── app.py         HTTP 라우트
 ├── contracts/
-│   ├── XCoin.sol      ERC-20 토큰 (외부 의존성 없는 단일 파일)
-│   └── DEPLOY.md      배포 가이드 (Remix + Polygon, 따라만 하면 됨)
+│   ├── XCoin.sol         ERC-20 토큰 (외부 의존성 없는 단일 파일)
+│   ├── XCoin.build.json  컴파일 결과 (abi + 바이트코드, 바로 배포 가능)
+│   ├── deploy.py         배포 스크립트 (--dry-run 으로 리허설 가능)
+│   ├── check_live.py     배포/설정 점검
+│   ├── new_wallet.py     테스트넷용 지갑 생성
+│   ├── test/             컨트랙트 EVM 테스트
+│   └── DEPLOY.md         배포 가이드 (Remix 수동 배포용)
 ├── sdk/
 │   ├── xcoin.js       게임 백엔드(Node) + 웹 클라이언트 SDK
 │   └── XcoinClient.cs 유니티용 클라이언트
@@ -253,6 +258,17 @@ done
 ## 실제 코인으로 전환하기
 
 시뮬레이션으로 충분히 돌려본 뒤에 진행하세요.
+**먼저 테스트넷입니다** — [`TESTNET.md`](TESTNET.md)를 따라가면 20분이면 끝나고 비용은 0원입니다.
+
+```bash
+python xcoin/contracts/new_wallet.py                      # 지갑 만들기
+python xcoin/contracts/deploy.py --dry-run                # 리허설 (가스 안 듦)
+python xcoin/contracts/deploy.py --network amoy \
+    --treasury 0x재무지갑 --treasury-fund 1000000          # 테스트넷 배포
+python xcoin/contracts/check_live.py --network amoy       # 설정 점검
+```
+
+메인넷으로 갈 때는:
 
 1. `contracts/DEPLOY.md`를 따라 Xcoin(XCN) 토큰을 배포합니다 (Polygon 권장)
 2. 환경변수를 채웁니다:
@@ -363,5 +379,6 @@ curl -H "X-Admin-Secret: $XCOIN_ADMIN_SECRET" http://localhost:8080/admin/chain/
 
 ## 상세 문서
 
-- 토큰 배포: [`contracts/DEPLOY.md`](contracts/DEPLOY.md)
+- **테스트넷 시작 (여기부터)**: [`TESTNET.md`](TESTNET.md)
+- 토큰 배포 (Remix 수동): [`contracts/DEPLOY.md`](contracts/DEPLOY.md)
 - 컨트랙트 코드: [`contracts/XCoin.sol`](contracts/XCoin.sol)
