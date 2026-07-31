@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Xcoin 데모 — 퍼즐 포인트 → 코인</title>
+<style>
+  :root {
+    --bg: #0e1117;
+    --card: #171b24;
+    --card2: #1f2530;
+    --line: #2a3140;
+    --text: #e6e9ef;
+    --dim: #8b95a7;
+    --accent: #ffb020;
+    --accent2: #4a9eff;
+    --ok: #35c98a;
+    --bad: #ff5c6c;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; padding: 16px 12px 48px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard",
+                 "Malgun Gothic", sans-serif;
+    font-size: 15px; line-height: 1.5;
+    max-width: 520px; margin-inline: auto;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.5px; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 14px; padding: 16px; margin-bottom: 14px;
+  }
+  .card h2 {
+    font-size: 13px; margin: 0 0 12px; color: var(--dim);
+    text-transform: uppercase; letter-spacing: 1px; font-weight: 600;
+  }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 4px; }
+  input {
+    width: 100%; padding: 10px 12px; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--card2); color: var(--text);
+    font-size: 14px; font-family: inherit;
+  }
+  input:focus { outline: none; border-color: var(--accent2); }
+  button {
+    width: 100%; padding: 12px; border-radius: 9px; border: none;
+    background: var(--accent2); color: #fff; font-size: 15px; font-weight: 600;
+    font-family: inherit; cursor: pointer; margin-top: 10px;
+  }
+  button:active { transform: scale(0.99); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.ghost { background: var(--card2); border: 1px solid var(--line); color: var(--text); }
+  button.gold { background: var(--accent); color: #1a1400; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .stat { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 0; }
+  .stat .k { color: var(--dim); font-size: 13px; }
+  .stat .v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .big { font-size: 34px; font-weight: 800; color: var(--accent);
+         font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+  .log {
+    background: #0a0d13; border: 1px solid var(--line); border-radius: 9px;
+    padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; line-height: 1.6; max-height: 180px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all; color: var(--dim);
+  }
+  .log .ok { color: var(--ok); }
+  .log .bad { color: var(--bad); }
+  .pill {
+    display: inline-block; padding: 3px 9px; border-radius: 20px;
+    font-size: 11px; font-weight: 600; background: var(--card2); color: var(--dim);
+  }
+  .pill.on { background: rgba(53,201,138,.15); color: var(--ok); }
+  .pill.off { background: rgba(255,92,108,.15); color: var(--bad); }
+
+  /* 퍼즐 보드 */
+  #board {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    aspect-ratio: 1; margin: 4px 0 12px;
+  }
+  .tile {
+    display: flex; align-items: center; justify-content: center;
+    background: var(--card2); border: 1px solid var(--line); border-radius: 11px;
+    font-size: 30px; font-weight: 800; color: var(--accent);
+    cursor: pointer; user-select: none; transition: transform .08s, background .15s;
+  }
+  .tile.empty { background: transparent; border-color: transparent; cursor: default; }
+  .tile:not(.empty):active { transform: scale(0.95); background: #2b3342; }
+  .hidden { display: none; }
+  details { margin-top: 6px; }
+  summary { cursor: pointer; color: var(--dim); font-size: 12px; padding: 4px 0; }
+  .warn {
+    background: rgba(255,176,32,.08); border: 1px solid rgba(255,176,32,.25);
+    border-radius: 9px; padding: 10px; font-size: 12px; color: #ffcf7a; margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+
+<h1><span>X</span>coin 데모</h1>
+<div class="sub">퍼즐을 풀어 포인트를 모으고, 지갑을 연동해 Xcoin으로 바꿔봅니다.</div>
+
+<!-- ========== 1. 연결 설정 ========== -->
+<div class="card">
+  <h2>1 · 연결 설정</h2>
+  <label>Xcoin 서버 주소</label>
+  <input id="serverUrl" value="">
+  <label>게임 ID</label>
+  <input id="gameId" placeholder="puzzle_01">
+  <label>게임 secret <span class="pill off">개발용</span></label>
+  <input id="gameSecret" type="password" placeholder="/admin/games 로 등록할 때 받은 값">
+  <div class="warn">
+    실제 앱에서는 secret을 절대 클라이언트에 두지 않습니다.
+    이 데모 페이지는 <b>게임 백엔드 역할을 흉내내기 위해</b> 브라우저에서 서명합니다.
+    운영에서는 여러분 서버가 서명해야 합니다.
+  </div>
+  <label>유저 ID</label>
+  <input id="userId" value="demo_user_1">
+  <button id="btnLogin">접속하기</button>
+  <div class="stat"><span class="k">상태</span><span id="loginState" class="pill off">미접속</span></div>
+</div>
+
+<!-- ========== 2. 게임 ========== -->
+<div class="card hidden" id="cardGame">
+  <h2>2 · 슬라이드 퍼즐</h2>
+  <div class="stat">
+    <span class="k">이동 <b id="moves" style="color:var(--text)">0</b>회 · <b id="timer" style="color:var(--text)">0.0</b>초</span>
+    <span class="v" id="scorePreview">–</span>
+  </div>
+  <div id="board"></div>
+  <div class="row">
+    <button class="ghost" id="btnShuffle">새 판</button>
+    <button class="gold" id="btnSubmit" disabled>결과 제출</button>
+  </div>
+  <div class="sub" style="margin:10px 0 0;font-size:12px">
+    숫자를 1~8 순서로 맞추면 완성입니다. 빠를수록, 적게 움직일수록 점수가 높습니다.
+  </div>
+</div>
+
+<!-- ========== 3. 포인트 ========== -->
+<div class="card hidden" id="cardPoints">
+  <h2>3 · 내 포인트</h2>
+  <div class="big" id="pointBalance">0 P</div>
+  <div class="stat"><span class="k">전환하면</span><span class="v" id="convertible">0 XCN</span></div>
+  <div class="stat"><span class="k">누적 획득</span><span class="v" id="lifetime">0 P</span></div>
+  <button class="ghost" id="btnRefresh">새로고침</button>
+  <details>
+    <summary>포인트 내역 보기</summary>
+    <div class="log" id="historyLog" style="margin-top:8px">–</div>
+  </details>
+</div>
+
+<!-- ========== 4. 지갑 ========== -->
+<div class="card hidden" id="cardWallet">
+  <h2>4 · 지갑 연동</h2>
+  <div class="stat">
+    <span class="k">연동 상태</span>
+    <span id="walletState" class="pill off">미연동</span>
+  </div>
+  <div class="stat"><span class="k">주소</span><span class="v" id="walletAddr" style="font-size:12px">–</span></div>
+  <button id="btnLinkWallet">메타마스크로 연동하기</button>
+  <button class="ghost" id="btnAddToken">지갑에 Xcoin 표시하기</button>
+  <div class="sub" style="margin:10px 0 0;font-size:12px">
+    서명은 지갑 소유 확인용이며 자산이 이동하지 않습니다. 개인키는 서버로 전송되지 않습니다.
+  </div>
+</div>
+
+<!-- ========== 5. 전환 ========== -->
+<div class="card hidden" id="cardConvert">
+  <h2>5 · 포인트 → Xcoin</h2>
+  <div class="stat"><span class="k">교환 비율</span><span class="v" id="rate" style="font-size:14px">–</span></div>
+  <label>전환할 포인트</label>
+  <input id="convertPoints" type="number" inputmode="numeric" value="1000">
+  <div class="stat"><span class="k">받게 될 수량</span><span class="v" id="quoteOut">–</span></div>
+  <button class="gold" id="btnConvert">코인으로 바꾸기</button>
+  <details open>
+    <summary>전환 내역</summary>
+    <div class="log" id="convLog" style="margin-top:8px">–</div>
+  </details>
+</div>
+
+<!-- ========== 로그 ========== -->
+<div class="card">
+  <h2>통신 로그</h2>
+  <div class="log" id="log">준비됨.</div>
+</div>
+
+<script>
+/* ==========================================================
+ * 데모용 유틸
+ * ========================================================== */
+const $ = id => document.getElementById(id);
+const state = { userToken: '', config: null, wallet: null };
+
+$('serverUrl').value = location.origin;
+
+function log(msg, cls) {
+  const el = $('log');
+  const time = new Date().toTimeString().slice(0, 8);
+  el.innerHTML = `<span class="${cls || ''}">[${time}] ${msg}</span>\n` + el.innerHTML;
+}
+
+function server() { return $('serverUrl').value.replace(/\/$/, ''); }
+
+async function api(method, path, body, useToken = true) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (useToken && state.userToken) headers['X-User-Token'] = state.userToken;
+  const res = await fetch(server() + path, {
+    method, headers, body: body ? JSON.stringify(body) : undefined
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json.ok === false) {
+    throw new Error(json.message || `HTTP ${res.status}`);
+  }
+  return json;
+}
+
+/* 게임 백엔드가 할 일을 브라우저에서 흉내낸다 (데모 전용) */
+async function hmacSha256(secret, payload) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function randomHex(n) {
+  const a = new Uint8Array(n);
+  crypto.getRandomValues(a);
+  return [...a].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/* ==========================================================
+ * 접속
+ * ========================================================== */
+$('btnLogin').onclick = async () => {
+  try {
+    state.config = await api('GET', '/config', null, false);
+    log(`서버 연결됨 · ${state.config.coin.name}(${state.config.coin.symbol}) · 모드 ${state.config.coin.mode}`, 'ok');
+    $('rate').textContent = `${state.config.policy.points_per_xcoin} P = 1 ${state.config.coin.symbol}`;
+    $('convertPoints').value = state.config.policy.min_convert_points;
+
+    const gameId = $('gameId').value.trim();
+    const secret = $('gameSecret').value.trim();
+    const userId = $('userId').value.trim();
+    if (!gameId || !secret || !userId) throw new Error('게임 ID, secret, 유저 ID를 모두 입력하세요.');
+
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = await hmacSha256(secret, `auth|${gameId}|${userId}|${ts}`);
+    const res = await api('POST', '/auth/session', {
+      game_id: gameId, user_id: userId, timestamp: ts, signature: sig
+    }, false);
+
+    state.userToken = res.user_token;
+    $('loginState').textContent = '접속됨';
+    $('loginState').className = 'pill on';
+    ['cardGame', 'cardPoints', 'cardWallet', 'cardConvert'].forEach(id => $(id).classList.remove('hidden'));
+    log('유저 토큰 발급 완료', 'ok');
+
+    newGame();
+    await refreshAll();
+  } catch (e) {
+    log('접속 실패: ' + e.message, 'bad');
+  }
+};
+
+/* ==========================================================
+ * 슬라이드 퍼즐 (3x3)
+ * ========================================================== */
+const SIZE = 3;
+let tiles = [], moves = 0, startedAt = 0, solved = false, timerHandle = null, lastRun = null;
+
+function render() {
+  const board = $('board');
+  board.innerHTML = '';
+  tiles.forEach((v, i) => {
+    const d = document.createElement('div');
+    d.className = 'tile' + (v === 0 ? ' empty' : '');
+    d.textContent = v === 0 ? '' : v;
+    d.onclick = () => move(i);
+    board.appendChild(d);
+  });
+}
+
+function move(i) {
+  if (solved) return;
+  const empty = tiles.indexOf(0);
+  const [r1, c1] = [Math.floor(i / SIZE), i % SIZE];
+  const [r2, c2] = [Math.floor(empty / SIZE), empty % SIZE];
+  if (Math.abs(r1 - r2) + Math.abs(c1 - c2) !== 1) return;
+
+  [tiles[i], tiles[empty]] = [tiles[empty], tiles[i]];
+  moves++;
+  $('moves').textContent = moves;
+  render();
+  checkSolved();
+}
+
+function checkSolved() {
+  const goal = [...Array(SIZE * SIZE - 1)].map((_, i) => i + 1).concat(0);
+  if (tiles.join() !== goal.join()) return;
+
+  solved = true;
+  clearInterval(timerHandle);
+  const durationMs = Date.now() - startedAt;
+  // 점수: 빠르고 적게 움직일수록 높다. 최소 100점은 보장.
+  const score = Math.max(100, 5000 - moves * 40 - Math.floor(durationMs / 1000) * 25);
+  lastRun = { score, durationMs, nonce: randomHex(16) };
+  $('scorePreview').textContent = score + '점 완성!';
+  $('btnSubmit').disabled = false;
+  log(`퍼즐 완성 · ${score}점 · ${moves}회 · ${(durationMs / 1000).toFixed(1)}초`, 'ok');
+}
+
+function newGame() {
+  // 풀 수 있는 배치만 만들기 위해, 완성 상태에서 무작위로 되돌린다.
+  tiles = [...Array(SIZE * SIZE - 1)].map((_, i) => i + 1).concat(0);
+  for (let k = 0; k < 200; k++) {
+    const empty = tiles.indexOf(0);
+    const [r, c] = [Math.floor(empty / SIZE), empty % SIZE];
+    const cand = [[r - 1, c], [r + 1, c], [r, c - 1], [r, c + 1]]
+      .filter(([rr, cc]) => rr >= 0 && rr < SIZE && cc >= 0 && cc < SIZE)
+      .map(([rr, cc]) => rr * SIZE + cc);
+    const pick = cand[Math.floor(Math.random() * cand.length)];
+    [tiles[pick], tiles[empty]] = [tiles[empty], tiles[pick]];
+  }
+  moves = 0; solved = false; lastRun = null;
+  startedAt = Date.now();
+  $('moves').textContent = '0';
+  $('scorePreview').textContent = '–';
+  $('btnSubmit').disabled = true;
+  clearInterval(timerHandle);
+  timerHandle = setInterval(() => {
+    $('timer').textContent = ((Date.now() - startedAt) / 1000).toFixed(1);
+  }, 100);
+  render();
+}
+
+$('btnShuffle').onclick = newGame;
+
+$('btnSubmit').onclick = async () => {
+  if (!lastRun) return;
+  $('btnSubmit').disabled = true;
+  try {
+    const gameId = $('gameId').value.trim();
+    const secret = $('gameSecret').value.trim();
+    const userId = $('userId').value.trim();
+    const ts = Math.floor(Date.now() / 1000);
+    const { score, durationMs, nonce } = lastRun;
+
+    // 게임 백엔드가 하는 일 (데모에서는 브라우저가 대신)
+    const payload = `${gameId}|${userId}|${score}|${durationMs}|${nonce}|${ts}`;
+    const sig = await hmacSha256(secret, payload);
+
+    const res = await api('POST', '/points/submit', {
+      game_id: gameId, user_id: userId, score, duration_ms: durationMs,
+      nonce, timestamp: ts, signature: sig
+    }, false);
+
+    if (res.duplicate) log('이미 제출된 판입니다. 중복 지급 없음.', 'ok');
+    else if (res.capped) log(`${res.awarded} 포인트 적립 (일일 한도에 걸려 일부만 지급)`, 'ok');
+    else log(`${res.awarded} 포인트 적립!`, 'ok');
+
+    await refreshAll();
+  } catch (e) {
+    log('제출 실패: ' + e.message, 'bad');
+    $('btnSubmit').disabled = false;
+  }
+};
+
+/* ==========================================================
+ * 포인트 / 지갑 / 전환
+ * ========================================================== */
+async function refreshAll() {
+  const userId = $('userId').value.trim();
+  try {
+    const b = await api('GET', `/points/balance?user_id=${encodeURIComponent(userId)}`);
+    $('pointBalance').textContent = b.points.toLocaleString() + ' P';
+    $('convertible').textContent = b.convertible_xcoin + ' ' + state.config.coin.symbol;
+    $('lifetime').textContent = b.lifetime_earned.toLocaleString() + ' P';
+
+    const h = await api('GET', `/points/history?user_id=${encodeURIComponent(userId)}&limit=15`);
+    $('historyLog').textContent = h.items.length
+      ? h.items.map(i => {
+          const t = new Date(i.created_at * 1000).toLocaleString('ko-KR');
+          const sign = i.delta > 0 ? '+' : '';
+          return `${t}  ${sign}${i.delta}P  ${i.reason}${i.memo ? ' · ' + i.memo : ''}`;
+        }).join('\n')
+      : '아직 내역이 없습니다.';
+
+    const w = await api('GET', `/wallet?user_id=${encodeURIComponent(userId)}`);
+    state.wallet = w;
+    $('walletState').textContent = w.linked ? '연동됨' : '미연동';
+    $('walletState').className = 'pill ' + (w.linked ? 'on' : 'off');
+    $('walletAddr').textContent = w.linked
+      ? w.address.slice(0, 10) + '…' + w.address.slice(-8) : '–';
+
+    const c = await api('GET', `/exchange/conversions?user_id=${encodeURIComponent(userId)}&limit=10`);
+    $('convLog').textContent = c.items.length
+      ? c.items.map(i => {
+          const t = new Date(i.created_at * 1000).toLocaleString('ko-KR');
+          const tx = i.tx_hash ? '\n   tx: ' + i.tx_hash : '';
+          return `${t}  ${i.points_spent}P → ${i.amount} ${i.symbol}  [${i.status}]${tx}`;
+        }).join('\n')
+      : '아직 전환 내역이 없습니다.';
+
+    await updateQuote();
+  } catch (e) {
+    log('조회 실패: ' + e.message, 'bad');
+  }
+}
+
+$('btnRefresh').onclick = refreshAll;
+
+async function updateQuote() {
+  const pts = parseInt($('convertPoints').value || '0', 10);
+  if (!pts) { $('quoteOut').textContent = '–'; return; }
+  try {
+    const q = await api('GET', `/exchange/quote?points=${pts}`, null, false);
+    $('quoteOut').textContent = `${q.amount} ${q.symbol}`;
+  } catch (e) {
+    $('quoteOut').textContent = '–';
+  }
+}
+$('convertPoints').oninput = updateQuote;
+
+$('btnLinkWallet').onclick = async () => {
+  const userId = $('userId').value.trim();
+  try {
+    if (!window.ethereum) throw new Error('메타마스크를 찾을 수 없습니다. 확장 프로그램을 설치하거나 지갑 앱 브라우저에서 열어주세요.');
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const address = accounts[0];
+    log('지갑 주소: ' + address);
+
+    const ch = await api('GET', `/wallet/nonce?user_id=${encodeURIComponent(userId)}`);
+    const signature = await window.ethereum.request({
+      method: 'personal_sign', params: [ch.message, address]
+    });
+    await api('POST', '/wallet/link', { user_id: userId, address, signature });
+    log('지갑 연동 완료!', 'ok');
+    await refreshAll();
+  } catch (e) {
+    log('지갑 연동 실패: ' + e.message, 'bad');
+  }
+};
+
+$('btnAddToken').onclick = async () => {
+  try {
+    if (!window.ethereum) throw new Error('메타마스크를 찾을 수 없습니다.');
+    if (!state.config.coin.contract) throw new Error('아직 토큰이 배포되지 않았습니다 (시뮬레이션 모드).');
+    await window.ethereum.request({
+      method: 'wallet_watchAsset',
+      params: { type: 'ERC20', options: {
+        address: state.config.coin.contract,
+        symbol: state.config.coin.symbol,
+        decimals: state.config.coin.decimals
+      }}
+    });
+    log('지갑에 토큰 추가됨', 'ok');
+  } catch (e) {
+    log('토큰 추가 실패: ' + e.message, 'bad');
+  }
+};
+
+$('btnConvert').onclick = async () => {
+  const userId = $('userId').value.trim();
+  const pts = parseInt($('convertPoints').value || '0', 10);
+  $('btnConvert').disabled = true;
+  try {
+    const res = await api('POST', '/exchange/convert', {
+      user_id: userId, points: pts,
+      idempotency_key: `${userId}-${Date.now()}`
+    });
+    log(`전환 요청 #${res.id} · ${res.points_spent}P → ${res.amount} ${res.symbol} · 상태 ${res.status}`, 'ok');
+    await refreshAll();
+    // 지급 워커가 처리할 시간을 조금 주고 다시 확인
+    setTimeout(refreshAll, 4000);
+  } catch (e) {
+    log('전환 실패: ' + e.message, 'bad');
+  } finally {
+    $('btnConvert').disabled = false;
+  }
+};
+
+/* URL 로 user_id / user_token 이 넘어오면 자동 채움 (유니티에서 열 때) */
+const params = new URLSearchParams(location.search);
+if (params.get('user_id')) $('userId').value = params.get('user_id');
+if (params.get('game_id')) $('gameId').value = params.get('game_id');
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# 포인트 DB — 절대 커밋하지 않습니다 (유저 잔액과 지갑 주소가 들어 있습니다)
+*.db
+*.db-wal
+*.db-shm
+
+# 컨트랙트 컴파일 산출물
+contracts/test/node_modules/
+contracts/test/package*.json
+contracts/test/XCoin.json
+
+__pycache__/
+*.pyc
+.env
