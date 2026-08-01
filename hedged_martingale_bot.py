@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "2026-07-26-h (TLS 인증서 경로 문제 대응)"
+VERSION = "2026-08-01-i (백테스트 기반 자산보호형 기본값)"
 
 import argparse
 import json
@@ -93,10 +93,14 @@ EXCHANGE_ID = os.environ.get("EXCHANGE_ID", "gateio")   # gateio, binance 등 cc
 SYMBOL = os.environ.get("SYMBOL", "BTC/USDT:USDT")
 TIMEFRAME = "15m"
 LEVERAGE = 10
-INITIAL_MARGIN_PCT = 0.02       # 1차 진입 마진 = 계좌 잔고의 2%
-STEP_TRIGGER_PCT = 0.003        # 평단가 대비 0.3% 역방향 이동마다 물타기(추가 진입) 트리거
+# 기본값은 2026-08-01 실제 BTC 15분봉 125일(코인베이스, 수수료 0.05%/체결 반영) 백테스트에서
+# 하드손절·최대낙폭 최소화 기준으로 고른 자산보호형 조합이다. GUI에서 언제든 변경 가능.
+#  - 물타기 간격을 넓게(1.2%) 잡으면 4단계까지 몰리는 일 자체가 줄어 하드손절이 급감했고
+#    (125일 동안 6회, 좁은 0.3% 간격은 19회), 보수적 시뮬 기준 MDD 8~16%로 방어됨.
+INITIAL_MARGIN_PCT = 0.01       # 1차 진입 마진 = 계좌 잔고의 1% (레버리지 포함 명목가치 = 잔고의 10%)
+STEP_TRIGGER_PCT = 0.012        # 평단가 대비 1.2% 역방향 이동마다 물타기(추가 진입) 트리거
 TP_PCT = 0.003                  # 평단가 대비 0.3% 순방향 이동 시 익절
-STOP_LOSS_PCT = 0.02            # 평단가 대비 2% 역방향 이동 시 전량 하드손절(물타기 간격과 독립)
+STOP_LOSS_PCT = 0.025           # 평단가 대비 2.5% 역방향 이동 시 전량 하드손절(물타기 간격과 독립)
 MAX_STEPS = 4                   # 1배 -> 2배 -> 4배 -> 8배
 COOLDOWN_SEC = 180              # 청산 후 재진입 대기 3분
 MAX_CONSECUTIVE_SL = int(os.environ.get("MAX_CONSECUTIVE_SL", "3"))  # 연속 손절 N회 시 해당 방향 자동 정지
