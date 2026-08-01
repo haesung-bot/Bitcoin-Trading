@@ -38,7 +38,7 @@ pip install pyinstaller ccxt requests
 같은 cmd 창에서:
 
 ```
-pyinstaller --onefile --noconsole --name "HedgedMartingaleBot" --collect-all ccxt hedged_martingale_bot_gui.py
+pyinstaller --onefile --noconsole --name "HedgedMartingaleBot" --collect-all ccxt --collect-all certifi hedged_martingale_bot_gui.py
 ```
 
 - `--onefile` : 파일 하나로 묶기
@@ -46,6 +46,8 @@ pyinstaller --onefile --noconsole --name "HedgedMartingaleBot" --collect-all ccx
 - `--name` : 만들어질 exe 파일 이름
 - `--collect-all ccxt` : ccxt가 거래소별 모듈을 내부적으로 동적 로딩하기 때문에, 이 옵션을
   빼면 exe 실행 시 "ModuleNotFoundError: No module named 'ccxt.gate'" 같은 오류가 날 수 있음
+- `--collect-all certifi` : TLS 인증서 파일(cacert.pem)을 exe에 포함. 이 옵션을 빼면 실행 시
+  "Could not find a suitable TLS CA certificate bundle" 오류로 거래소 연결이 계속 실패함 (필수!)
 
 빌드가 끝나면 같은 폴더 안에 `dist` 폴더가 생기고, 그 안에 `HedgedMartingaleBot.exe` 파일이 있습니다.
 
@@ -80,6 +82,10 @@ pyinstaller --onefile --noconsole --name "HedgedMartingaleBot" --collect-all ccx
 **Q. exe 실행 시 "ModuleNotFoundError"가 뜬다**
 A. `--collect-all ccxt` 옵션을 빼고 빌드했을 가능성이 높습니다. 3단계 명령어를 그대로
    다시 실행하세요.
+
+**Q. "Could not find a suitable TLS CA certificate bundle" 오류가 반복된다**
+A. 인증서 파일이 exe에 안 들어간 것입니다. `--collect-all certifi` 옵션을 넣어 3단계 명령어로
+   다시 빌드하세요. (이 오류가 나면 거래소 연결이 안 돼 주문/시세 조회가 전부 실패합니다.)
 
 **Q. 백신 프로그램이 exe를 위험하다고 차단한다**
 A. PyInstaller로 만든 exe는 서명되지 않은 파일이라 일부 백신이 오탐지하는 경우가 흔합니다.

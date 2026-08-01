@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "2026-07-26-g (물타기 간격/손절 분리 설정)"
+VERSION = "2026-07-26-h (TLS 인증서 경로 문제 대응)"
 
 import argparse
 import json
@@ -43,6 +43,26 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, List, Optional, Tuple
+
+
+def _ensure_ssl_cert_bundle() -> None:
+    """PyInstaller onefile exe에서 certifi CA 번들 경로 문제로 TLS 연결이 실패하는 것을 방지한다.
+
+    'Could not find a suitable TLS CA certificate bundle' 오류는 exe에 인증서 파일이 제대로
+    포함/인식되지 않아 생긴다. certifi가 실제로 가진 cacert.pem 경로를 찾아 환경변수로 지정한다.
+    (빌드 시 --collect-all certifi 옵션과 함께 쓰면 확실하다.)
+    """
+    try:
+        import certifi
+        path = certifi.where()
+        if path and os.path.exists(path):
+            os.environ["SSL_CERT_FILE"] = path
+            os.environ["REQUESTS_CA_BUNDLE"] = path
+    except Exception:
+        pass
+
+
+_ensure_ssl_cert_bundle()
 
 import requests
 
