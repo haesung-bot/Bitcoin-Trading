@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "2026-08-06-l (거래소 5종 선택 + API 발급안내)"
+VERSION = "2026-08-06-m (매매 기록 기능 추가)"
 
 import argparse
 import json
@@ -232,6 +232,9 @@ POLL_SEC = int(os.environ.get("POLL_SEC", "30"))  # 가격 조회 주기(초)
 STATE_PATH = os.environ.get(
     "STATE_PATH", os.path.join(os.path.expanduser("~"), ".hedged_martingale_bot_state.json")
 )  # 진행 중인 매매 상태(진입 단계/체결 내역/쿨다운) 저장 위치. 재시작 시 여기서 복원한다.
+TRADE_LOG_PATH = os.environ.get(
+    "TRADE_LOG_PATH", os.path.join(os.path.expanduser("~"), ".hedged_martingale_bot_trades.json")
+)  # 청산될 때마다 쌓이는 매매 기록(시각/방향/진입가/청산가/수익금/수익률) 저장 위치.
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -560,12 +563,14 @@ class Fill:
 class MartingaleModule:
     """롱 또는 숏 한쪽만 담당하는 완전 독립 상태머신. 반대편 모듈과 상태를 공유하지 않는다."""
 
-    def __init__(self, side: Side, broker, notifier: TelegramNotifier, qty_provider: Callable[[float], float], mode_label: str):
+    def __init__(self, side: Side, broker, notifier: TelegramNotifier, qty_provider: Callable[[float], float],
+                 mode_label: str, on_trade_closed: Optional[Callable[[dict], None]] = None):
         self.side = side
         self.broker = broker
         self.notifier = notifier
         self.qty_provider = qty_provider
         self.mode_label = mode_label
+        self.on_trade_closed = on_trade_closed  # 청산될 때마다 매매 기록을 남기기 위한 콜백
         self.consecutive_sl = 0
         self.halted = False
         self._reset()
@@ -703,9 +708,31 @@ class MartingaleModule:
         self.broker.apply_pnl(pnl)
         return pnl
 
+    def _record_trade(self, price: float, reason: str, pnl: float) -> None:
+        """청산 1건을 매매 기록으로 남긴다(진입가=평단가, 청산가, 수익금, 레버리지 반영 수익률)."""
+        if self.on_trade_closed is None:
+            return
+        avg = self.avg_price or price
+        # 가격 변동률 x 레버리지 = 증거금 대비 실제 수익률
+        raw_pct = ((price - avg) / avg) if self.side == Side.LONG else ((avg - price) / avg)
+        try:
+            self.on_trade_closed({
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "side": self.side.value,
+                "reason": reason,
+                "entry_price": round(avg, 2),
+                "exit_price": round(price, 2),
+                "qty": round(self.total_qty, 8),
+                "profit_usdt": round(pnl, 4),
+                "leveraged_return_pct": round(raw_pct * 100 * LEVERAGE, 4),
+            })
+        except Exception as e:
+            logger.warning("매매 기록 저장 실패: %s", e)
+
     def _take_profit(self, price: float) -> None:
         pnl = self._close_all(price)
         self._notify_close(price, "익절(TP)", pnl)
+        self._record_trade(price, "익절", pnl)
         self._reset()
         self.consecutive_sl = 0
         self.cooldown_until = time.time() + COOLDOWN_SEC
@@ -713,6 +740,7 @@ class MartingaleModule:
     def _stop_loss(self, price: float) -> None:
         pnl = self._close_all(price)
         self._notify_close(price, "하드 손절(SL) → 모듈 리셋", pnl)
+        self._record_trade(price, "손절", pnl)
         self._reset()
         self.consecutive_sl += 1
         self.cooldown_until = time.time() + COOLDOWN_SEC
@@ -745,13 +773,14 @@ class MartingaleModule:
 
 # ───────────── 봇 엔진 ─────────────
 class HedgedMartingaleBot:
-    def __init__(self, broker, notifier: TelegramNotifier, mode_label: str, state_path: Optional[str] = None):
+    def __init__(self, broker, notifier: TelegramNotifier, mode_label: str, state_path: Optional[str] = None,
+                 on_trade_closed: Optional[Callable[[dict], None]] = None):
         self.broker = broker
         self.notifier = notifier
         self.state_path = state_path
         qty_provider = make_qty_provider(broker)
-        self.long = MartingaleModule(Side.LONG, broker, notifier, qty_provider, mode_label)
-        self.short = MartingaleModule(Side.SHORT, broker, notifier, qty_provider, mode_label)
+        self.long = MartingaleModule(Side.LONG, broker, notifier, qty_provider, mode_label, on_trade_closed)
+        self.short = MartingaleModule(Side.SHORT, broker, notifier, qty_provider, mode_label, on_trade_closed)
         if self.state_path:
             self._load_state()
 

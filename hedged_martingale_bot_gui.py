@@ -52,6 +52,7 @@ class HedgedMartingaleGUI:
         self._create_scrollable_container()
         self._build_widgets()
         self._load_saved_credentials()
+        self._load_trade_history()
         self._install_log_handler()
         self._poll_log_queue()
         self._log(f"ℹ️ 프로그램 버전: {core.VERSION}")
@@ -158,14 +159,6 @@ class HedgedMartingaleGUI:
         tk.Label(config_frame, text="(잔고 대비 1차 진입 마진. 예: 잔고 100 × 레버리지 10배 × 1% ≈ 10 USDT 진입)",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=1, column=2, sticky="w", padx=(8, 0))
 
-        tk.Label(
-            config_frame,
-            text=(f"※ 익절 {core.TP_PCT*100:g}% / 물타기 간격 {core.STEP_TRIGGER_PCT*100:g}% "
-                  f"(최대 {core.MAX_STEPS}단계, 1→2→4→8배) / 손절 {core.STOP_LOSS_PCT*100:g}% 로 고정 운용됩니다.\n"
-                  "   롱/숏은 서로 독립적으로 동시에 운용됩니다."),
-            fg="#7f8c8d", font=("맑은 고딕", 8), justify="left", anchor="w").grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=(5, 0))
-
         # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
         for var in (self.api_key_var, self.api_secret_var, self.passphrase_var,
                     self.leverage_var, self.pos_pct_var):
@@ -184,12 +177,10 @@ class HedgedMartingaleGUI:
                                   command=self._on_stop_clicked)
         self.stop_btn.pack(side="right", fill="x", expand=True, padx=5)
 
-        reset_btn_frame = tk.Frame(parent)
-        reset_btn_frame.pack(fill="x", padx=15, pady=(0, 5))
-        self.reset_btn = tk.Button(reset_btn_frame, text="⟳ 저장된 매매상태 초기화 (정지 후 사용)",
-                                   bg="#34495e", fg="white", font=("맑은 고딕", 10, "bold"),
-                                   command=self._on_reset_clicked)
-        self.reset_btn.pack(fill="x")
+        history_btn_frame = tk.Frame(parent)
+        history_btn_frame.pack(fill="x", padx=15, pady=(0, 5))
+        tk.Button(history_btn_frame, text="📊 매매 기록 보기", bg="#34495e", fg="white",
+                  font=("맑은 고딕", 10, "bold"), command=self._show_trade_history).pack(fill="x")
 
         # 4. 실시간 로그 창
         log_frame = tk.LabelFrame(parent, text=" 실시간 매매 로그 및 상태 ", padx=10, pady=10)
@@ -420,10 +411,7 @@ class HedgedMartingaleGUI:
         core.INITIAL_MARGIN_PCT = pos_pct
 
         self._save_credentials()
-        self._log(
-            f"전략 설정 적용: {exchange_name} / 레버리지 {leverage}x / 포지션 크기 {pos_pct*100:g}% / "
-            f"익절 {core.TP_PCT*100:g}% / 물타기 간격 {core.STEP_TRIGGER_PCT*100:g}% / 손절 {core.STOP_LOSS_PCT*100:g}%"
-        )
+        self._log(f"전략 설정 적용: {exchange_name} / 레버리지 {leverage}x / 포지션 크기 {pos_pct*100:g}%")
 
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
@@ -439,7 +427,8 @@ class HedgedMartingaleGUI:
         try:
             broker = core.LiveBroker(exchange_name, api_key, api_secret, passphrase)
             notifier = core.TelegramNotifier(core.TELEGRAM_BOT_TOKEN, core.TELEGRAM_CHAT_ID)
-            bot = core.HedgedMartingaleBot(broker, notifier, mode_label="LIVE", state_path=core.STATE_PATH)
+            bot = core.HedgedMartingaleBot(broker, notifier, mode_label="LIVE", state_path=core.STATE_PATH,
+                                           on_trade_closed=self._on_trade_closed)
             market_data = core.PublicMarketData(exchange_name)
         except Exception as e:
             self._log(f"[오류] 계좌 연결 실패: {e}")
@@ -458,28 +447,96 @@ class HedgedMartingaleGUI:
         self.status_var.set("상태: 정지 중...")
         self.stop_event.set()
 
-    def _on_reset_clicked(self) -> None:
-        if self.worker_thread is not None and self.worker_thread.is_alive():
-            messagebox.showwarning("실행 중", "먼저 '■ 정지'를 누른 뒤 상태를 초기화하세요.")
-            return
-        name = self.exchange_var.get()
-        confirmed = messagebox.askyesno(
-            "저장된 매매상태 초기화",
-            "저장된 매매 진행 상태를 삭제하고 다음 시작 시 처음부터 진행합니다.\n\n"
-            f"⚠️ 거래소({name})에 실제로 열려있는 포지션은 이 버튼으로 삭제되지 않습니다.\n"
-            f"포지션이 남아 있으면 {name}에서 직접 청산한 뒤 초기화하세요.\n\n"
-            "계속할까요?",
-        )
-        if not confirmed:
+    # ───────────── 매매 기록 ─────────────
+    def _load_trade_history(self) -> None:
+        self.trade_history = []
+        if not os.path.exists(core.TRADE_LOG_PATH):
             return
         try:
-            if os.path.exists(core.STATE_PATH):
-                os.remove(core.STATE_PATH)
-                self._log("저장된 매매 상태를 초기화했습니다. 다음 시작은 포지션 0에서 새로 진행됩니다.")
-            else:
-                self._log("저장된 매매 상태 파일이 없습니다(이미 초기 상태).")
+            with open(core.TRADE_LOG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                self.trade_history = data
         except Exception as e:
-            self._log(f"상태 초기화 실패: {e}")
+            self._log(f"매매 기록을 불러오지 못했습니다: {e}")
+
+    def _save_trade_history(self) -> None:
+        try:
+            with open(core.TRADE_LOG_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.trade_history, f, ensure_ascii=False)
+        except Exception as e:
+            self._log(f"매매 기록 저장 실패: {e}")
+
+    def _on_trade_closed(self, trade: dict) -> None:
+        """청산될 때마다(매매 스레드에서) 호출된다. 기록에 추가하고 로그에도 한 줄 남긴다."""
+        self.trade_history.append(trade)
+        self._save_trade_history()
+        self._log(
+            f"📊 매매기록 | {trade['side']} {trade['reason']} | "
+            f"진입 {trade['entry_price']:,.2f} → 청산 {trade['exit_price']:,.2f} | "
+            f"수익금 {trade['profit_usdt']:+.2f} USDT ({trade['leveraged_return_pct']:+.2f}%)"
+        )
+
+    def _show_trade_history(self) -> None:
+        """매매 기록을 별도 창에 표로 보여준다."""
+        win = tk.Toplevel(self.root)
+        win.title("📊 자동매매 기록")
+        win.geometry("900x500")
+
+        summary_frame = tk.Frame(win, pady=8)
+        summary_frame.pack(fill="x", padx=10)
+
+        if self.trade_history:
+            total = len(self.trade_history)
+            wins = sum(1 for t in self.trade_history if t.get("leveraged_return_pct", 0) > 0)
+            win_rate = wins / total * 100
+            avg_return = sum(t.get("leveraged_return_pct", 0) for t in self.trade_history) / total
+            total_profit = sum(t.get("profit_usdt", 0.0) for t in self.trade_history)
+            summary_text = (
+                f"총 거래 {total}건  |  승률 {win_rate:.1f}% ({wins}승 {total - wins}패)  |  "
+                f"건당 평균 수익률 {avg_return:+.2f}%  |  총 수익금 {total_profit:+.2f} USDT"
+            )
+        else:
+            summary_text = "아직 매매 기록이 없습니다."
+
+        tk.Label(summary_frame, text=summary_text, font=("맑은 고딕", 10, "bold")).pack(side="left")
+        tk.Button(summary_frame, text="기록 전체 삭제",
+                  command=lambda: self._clear_trade_history(win)).pack(side="right")
+
+        columns = ("time", "side", "entry", "exit", "profit", "ret")
+        tree = ttk.Treeview(win, columns=columns, show="headings", height=18)
+        headers = {"time": "시각", "side": "방향", "entry": "진입가", "exit": "청산가",
+                   "profit": "수익금(USDT)", "ret": "수익률%"}
+        widths = {"time": 160, "side": 60, "entry": 110, "exit": 110, "profit": 120, "ret": 100}
+        for col in columns:
+            tree.heading(col, text=headers[col])
+            tree.column(col, width=widths[col], anchor="center")
+
+        tree.tag_configure("win", foreground="#1a7a1a")
+        tree.tag_configure("loss", foreground="#c0392b")
+
+        for t in reversed(self.trade_history):  # 최신 기록이 위로
+            ret = t.get("leveraged_return_pct", 0.0)
+            tag = "win" if ret > 0 else "loss"
+            tree.insert("", "end", values=(
+                t.get("time", "-"), t.get("side", "-"),
+                f"{t.get('entry_price', 0):,.2f}", f"{t.get('exit_price', 0):,.2f}",
+                f"{t.get('profit_usdt', 0.0):+.2f}", f"{ret:+.2f}",
+            ), tags=(tag,))
+
+        scrollbar = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
+        scrollbar.pack(side="right", fill="y", pady=(0, 10))
+
+    def _clear_trade_history(self, win: tk.Toplevel) -> None:
+        if not messagebox.askyesno("확인", "저장된 매매 기록을 전부 삭제하시겠습니까? 되돌릴 수 없습니다."):
+            return
+        self.trade_history = []
+        self._save_trade_history()
+        win.destroy()
+        self._log("매매 기록을 전부 삭제했습니다.")
+        messagebox.showinfo("완료", "매매 기록을 삭제했습니다.")
 
     def _set_stopped_ui(self) -> None:
         self.start_btn.config(state="normal")
