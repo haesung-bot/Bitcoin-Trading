@@ -58,8 +58,9 @@ class HedgedMartingaleGUI:
     # ───────────── UI 구성 ─────────────
     def _build_widgets(self) -> None:
         info = (
-            f"거래소: Gate.io 선물({core.SYMBOL}) / 레버리지: {core.LEVERAGE}x (양방향 Hedge Mode)\n"
-            "포지션 크기 %: 잔고 대비 진입 마진 비율(예: 2 → 레버리지 포함 명목가치는 잔고의 20%)\n"
+            f"거래소: Gate.io 선물({core.SYMBOL}) (양방향 Hedge Mode)\n"
+            "레버리지: 매매 시작 시 거래소 계좌에 설정됨 (Gate.io 기준 1~100)\n"
+            "포지션 크기 %: 잔고 대비 진입 마진 비율(예: 2 → 레버리지 10x면 명목가치는 잔고의 20%)\n"
             "익절 %: 평단가 대비 이만큼 유리하게 움직이면 전량 익절\n"
             "물타기 간격 %: 평단가 대비 이만큼 불리하게 갈 때마다 1→2→4→8배 추가 진입(최대 4단계)\n"
             "손절 %: 평단가 대비 이만큼 불리해지면 단계와 무관하게 전량 손절 (물타기 간격보다 크게 설정)"
@@ -85,29 +86,33 @@ class HedgedMartingaleGUI:
         self.tg_chat_var = tk.StringVar()
         tk.Entry(form, textvariable=self.tg_chat_var, width=50).grid(row=3, column=1, columnspan=3, pady=3, sticky="we")
 
-        # ── 전략 설정(%) ──
-        tk.Label(form, text="포지션 크기 %").grid(row=4, column=0, sticky="w", pady=3)
+        # ── 전략 설정 ──
+        tk.Label(form, text="레버리지 (배)").grid(row=4, column=0, sticky="w", pady=3)
+        self.leverage_var = tk.StringVar(value=f"{core.LEVERAGE:g}")
+        tk.Entry(form, textvariable=self.leverage_var, width=10).grid(row=4, column=1, pady=3, sticky="w")
+
+        tk.Label(form, text="포지션 크기 %").grid(row=4, column=2, sticky="e", padx=(10, 4), pady=3)
         self.pos_pct_var = tk.StringVar(value=f"{core.INITIAL_MARGIN_PCT * 100:g}")
-        tk.Entry(form, textvariable=self.pos_pct_var, width=10).grid(row=4, column=1, pady=3, sticky="w")
+        tk.Entry(form, textvariable=self.pos_pct_var, width=10).grid(row=4, column=3, pady=3, sticky="w")
 
-        tk.Label(form, text="익절 %").grid(row=4, column=2, sticky="e", padx=(10, 4), pady=3)
+        tk.Label(form, text="익절 %").grid(row=5, column=0, sticky="w", pady=3)
         self.tp_pct_var = tk.StringVar(value=f"{core.TP_PCT * 100:g}")
-        tk.Entry(form, textvariable=self.tp_pct_var, width=10).grid(row=4, column=3, pady=3, sticky="w")
+        tk.Entry(form, textvariable=self.tp_pct_var, width=10).grid(row=5, column=1, pady=3, sticky="w")
 
-        tk.Label(form, text="물타기 간격 %").grid(row=5, column=0, sticky="w", pady=3)
+        tk.Label(form, text="물타기 간격 %").grid(row=5, column=2, sticky="e", padx=(10, 4), pady=3)
         self.step_pct_var = tk.StringVar(value=f"{core.STEP_TRIGGER_PCT * 100:g}")
-        tk.Entry(form, textvariable=self.step_pct_var, width=10).grid(row=5, column=1, pady=3, sticky="w")
+        tk.Entry(form, textvariable=self.step_pct_var, width=10).grid(row=5, column=3, pady=3, sticky="w")
 
-        tk.Label(form, text="손절 %").grid(row=5, column=2, sticky="e", padx=(10, 4), pady=3)
+        tk.Label(form, text="손절 %").grid(row=6, column=0, sticky="w", pady=3)
         self.sl_pct_var = tk.StringVar(value=f"{core.STOP_LOSS_PCT * 100:g}")
-        tk.Entry(form, textvariable=self.sl_pct_var, width=10).grid(row=5, column=3, pady=3, sticky="w")
+        tk.Entry(form, textvariable=self.sl_pct_var, width=10).grid(row=6, column=1, pady=3, sticky="w")
 
         form.columnconfigure(1, weight=1)
         form.columnconfigure(3, weight=1)
 
         # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
         for var in (self.api_key_var, self.api_secret_var, self.tg_token_var, self.tg_chat_var,
-                    self.pos_pct_var, self.tp_pct_var, self.step_pct_var, self.sl_pct_var):
+                    self.leverage_var, self.pos_pct_var, self.tp_pct_var, self.step_pct_var, self.sl_pct_var):
             var.trace_add("write", self._schedule_save)
 
         btn_frame = tk.Frame(self.root)
@@ -169,6 +174,8 @@ class HedgedMartingaleGUI:
             self.api_secret_var.set(data.get("api_secret", ""))
             self.tg_token_var.set(data.get("tg_token", ""))
             self.tg_chat_var.set(data.get("tg_chat", ""))
+            if data.get("leverage"):
+                self.leverage_var.set(str(data["leverage"]))
             if data.get("pos_pct"):
                 self.pos_pct_var.set(str(data["pos_pct"]))
             if data.get("tp_pct"):
@@ -189,6 +196,7 @@ class HedgedMartingaleGUI:
                         "api_secret": self.api_secret_var.get().strip(),
                         "tg_token": self.tg_token_var.get().strip(),
                         "tg_chat": self.tg_chat_var.get().strip(),
+                        "leverage": self.leverage_var.get().strip(),
                         "pos_pct": self.pos_pct_var.get().strip(),
                         "tp_pct": self.tp_pct_var.get().strip(),
                         "step_pct": self.step_pct_var.get().strip(),
@@ -220,7 +228,15 @@ class HedgedMartingaleGUI:
             messagebox.showerror("입력 오류", "Gate.io API Key와 Secret을 입력하세요.")
             return
 
-        # 전략 % 값 검증 및 적용
+        # 전략 값 검증 및 적용
+        try:
+            leverage = int(float(self.leverage_var.get().strip()))
+            if not 1 <= leverage <= 100:
+                raise ValueError("레버리지는 1~100 사이여야 합니다.")
+        except ValueError as e:
+            messagebox.showerror("입력 오류", f"레버리지는 1~100 사이의 숫자여야 합니다.\n({e})")
+            return
+
         try:
             pos_pct = self._parse_pct(self.pos_pct_var.get(), "포지션 크기 %")
             tp_pct = self._parse_pct(self.tp_pct_var.get(), "익절 %")
@@ -238,6 +254,18 @@ class HedgedMartingaleGUI:
             )
             return
 
+        # 4단계까지 물타기하면 1차의 15배 명목가치가 필요하므로, 증거금이 잔고를 넘지 않는지 확인
+        max_margin_ratio = pos_pct * (2 ** core.MAX_STEPS - 1)
+        if max_margin_ratio > 1.0:
+            messagebox.showerror(
+                "입력 오류",
+                f"포지션 크기 {pos_pct*100:g}%로는 {core.MAX_STEPS}단계까지 물타기할 때 "
+                f"증거금이 잔고의 {max_margin_ratio*100:.0f}%가 되어 부족해집니다.\n"
+                f"포지션 크기를 {100/(2**core.MAX_STEPS-1):.2f}% 이하로 낮추세요.",
+            )
+            return
+
+        core.LEVERAGE = leverage
         core.INITIAL_MARGIN_PCT = pos_pct
         core.TP_PCT = tp_pct
         core.STEP_TRIGGER_PCT = step_pct
@@ -247,7 +275,7 @@ class HedgedMartingaleGUI:
         core.TELEGRAM_BOT_TOKEN = self.tg_token_var.get().strip()
         core.TELEGRAM_CHAT_ID = self.tg_chat_var.get().strip()
         self._log(
-            f"전략 설정 적용: 포지션 크기 {pos_pct*100:g}% / 익절 {tp_pct*100:g}% / "
+            f"전략 설정 적용: 레버리지 {leverage}x / 포지션 크기 {pos_pct*100:g}% / 익절 {tp_pct*100:g}% / "
             f"물타기 간격 {step_pct*100:g}% / 손절 {sl_pct*100:g}%"
         )
 

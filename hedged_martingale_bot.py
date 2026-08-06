@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "2026-08-01-i (백테스트 기반 자산보호형 기본값)"
+VERSION = "2026-08-01-j (레버리지 설정 입력창 추가)"
 
 import argparse
 import json
@@ -238,7 +238,7 @@ _EXCHANGE_DEFAULT_TYPE = {
 class LiveBroker:
     """실거래 브로커. 최초 연결 시 계좌에 Hedge Mode(Gate.io는 Dual Mode)와 레버리지 10배를 설정한다."""
 
-    def __init__(self, exchange_id: str, api_key: str, api_secret: str, symbol: str = SYMBOL, leverage: int = LEVERAGE):
+    def __init__(self, exchange_id: str, api_key: str, api_secret: str, symbol: str = SYMBOL, leverage: Optional[int] = None):
         exchange_cls = _resolve_exchange_class(exchange_id)
         self.exchange_id = exchange_id
         self.exchange = exchange_cls({
@@ -249,7 +249,8 @@ class LiveBroker:
         })
         self.symbol = symbol
         self.exchange.load_markets()  # market()/set_position_mode()가 미리 로드된 마켓 정보를 필요로 함
-        self._setup_account(leverage)
+        # leverage 미지정 시 실행 시점의 전역 LEVERAGE를 사용(GUI에서 변경한 값이 반영되도록).
+        self._setup_account(LEVERAGE if leverage is None else leverage)
 
     def _setup_account(self, leverage: int) -> None:
         try:
