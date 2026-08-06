@@ -40,9 +40,6 @@ class HedgedMartingaleGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("비트코인 선물 자동매매")
-        self.root.geometry("720x880")
-        self.root.minsize(680, 580)
-        self.root.resizable(True, True)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.stop_event = threading.Event()
@@ -52,8 +49,8 @@ class HedgedMartingaleGUI:
         self.bot = None                 # 실행 중인 봇(상태줄에 포지션을 표시하기 위해 보관)
         self.exchange_label = ""
 
-        self._create_scrollable_container()
         self._build_widgets()
+        self._fit_window_to_content()
         self._load_saved_credentials()
         self._load_trade_history()
         self._install_log_handler()
@@ -62,38 +59,17 @@ class HedgedMartingaleGUI:
         self._log("ℹ️ API Key를 입력한 뒤 '자동매매 시작' 버튼을 눌러주세요.")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    def _create_scrollable_container(self) -> None:
-        """창을 줄여도 스크롤(휠/스크롤바)로 전체 내용을 볼 수 있도록 캔버스로 감싼다."""
-        container = tk.Frame(self.root)
-        container.pack(fill="both", expand=True)
-
-        self.main_canvas = tk.Canvas(container, highlightthickness=0)
-        main_scrollbar = tk.Scrollbar(container, orient="vertical", command=self.main_canvas.yview)
-        self.scrollable_frame = tk.Frame(self.main_canvas)
-
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.main_canvas.configure(scrollregion=self.main_canvas.bbox("all")),
-        )
-        self.canvas_window = self.main_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        self.main_canvas.configure(yscrollcommand=main_scrollbar.set)
-
-        # 캔버스 폭이 바뀌면 내부 프레임 폭도 같이 맞춰서, 가로로는 안 잘리고 내용이 꽉 차게 한다
-        self.main_canvas.bind(
-            "<Configure>",
-            lambda e: self.main_canvas.itemconfig(self.canvas_window, width=e.width),
-        )
-        self.main_canvas.pack(side="left", fill="both", expand=True)
-        main_scrollbar.pack(side="right", fill="y")
-
-        def _on_mousewheel(event):
-            self.main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        self.main_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+    def _fit_window_to_content(self) -> None:
+        """창을 내용에 딱 맞는 크기로 맞춘다. 세로로 늘리면 로그창만 커지고, 그보다 작게는 못 줄인다."""
+        self.root.update_idletasks()
+        width = self.root.winfo_reqwidth()
+        height = self.root.winfo_reqheight()
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(width, height)
 
     # ───────────── UI 구성 ─────────────
     def _build_widgets(self) -> None:
-        parent = self.scrollable_frame
+        parent = self.root
 
         # 1. 거래소 / API 설정
         api_frame = tk.LabelFrame(parent, text=" 거래소 / API 설정 ", padx=10, pady=10)
@@ -144,7 +120,7 @@ class HedgedMartingaleGUI:
         tk.Button(save_row, text="저장된 키 삭제", command=self._clear_saved_credentials).pack(side="left", padx=(10, 0))
         tk.Label(api_frame, text="⚠️ 체크 시 이 PC에 평문으로 저장됩니다. 본인 개인 PC에서만 사용하세요.",
                  fg="#c0392b", font=("맑은 고딕", 8)).grid(row=6, column=0, columnspan=3, sticky="w", pady=(2, 0))
-        tk.Label(api_frame, text="※ 거래소마다 API 키가 다릅니다. 거래소를 바꾸면 그 거래소용으로 저장된 키가 자동으로 불러와집니다.",
+        tk.Label(api_frame, text="※ 거래소를 바꾸면 그 거래소용으로 저장된 키가 자동으로 불러와집니다.",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=7, column=0, columnspan=3, sticky="w")
 
         self._update_passphrase_visibility()
@@ -161,7 +137,7 @@ class HedgedMartingaleGUI:
         lev_hint.grid(row=0, column=2, sticky="w", padx=(8, 0))
         tk.Label(lev_hint, text="※ 10배 추천", fg="#c0392b",
                  font=("맑은 고딕", 9, "bold")).pack(side="left")
-        tk.Label(lev_hint, text="(매매 시작 시 거래소 계좌에 설정됩니다)",
+        tk.Label(lev_hint, text="(시작할 때 거래소 계좌에 설정됩니다)",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).pack(side="left", padx=(6, 0))
 
         tk.Label(config_frame, text="포지션 크기 (%):").grid(row=1, column=0, sticky="w")
@@ -171,7 +147,7 @@ class HedgedMartingaleGUI:
         pos_hint.grid(row=1, column=2, sticky="w", padx=(8, 0))
         tk.Label(pos_hint, text="※ 2% 추천", fg="#c0392b",
                  font=("맑은 고딕", 9, "bold")).pack(side="left")
-        tk.Label(pos_hint, text="(잔고 대비 진입 비율. 예: 잔고 100 × 레버리지 10배 × 2% ≈ 20 USDT 진입)",
+        tk.Label(pos_hint, text="(예: 잔고 100 × 10배 × 2% ≈ 20 USDT 진입)",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).pack(side="left", padx=(6, 0))
 
         # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
