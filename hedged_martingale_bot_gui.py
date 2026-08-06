@@ -1,13 +1,13 @@
 """
 hedged_martingale_bot_gui.py
-비트코인 양방향(Hedge Mode) 마틴게일 자동매매 - Gate.io 실거래 GUI
+비트코인 선물 자동매매 - 실거래 GUI
 
-hedged_martingale_bot.py의 전략 엔진을 그대로 사용한다. API 키를 입력하고
-'자동매매 시작' 버튼을 누르면 실제 Gate.io 계좌로 주문이 나가는 실거래가 시작된다
-(모의매매 아님). 레버리지/포지션 크기/익절/물타기 간격/손절은 화면에서 직접 설정한다.
+hedged_martingale_bot.py의 매매 엔진을 사용한다. 거래소를 고르고 API 키를 입력한 뒤
+'자동매매 시작'을 누르면 실제 계좌로 주문이 나간다(모의매매 아님).
 
-화면 구성은 gateio_supertrend_bot.py와 동일한 스타일(스크롤 컨테이너 + LabelFrame
-섹션 + 어두운 로그창)을 따른다.
+배포용이므로 화면 로그에는 내부 전략(진입 조건, 단계별 추가매수, 대기시간, 안전장치 기준)이
+드러나지 않고, 사용자가 필요한 정보(진입 금액/가격/보유 포지션/손익/잔고)만 표시한다.
+기술적 상세는 DEBUG 레벨로만 남기므로 화면에는 나오지 않는다.
 
 exe로 빌드하는 방법은 hedged_martingale_bot_exe_빌드_방법.md 참고.
 """
@@ -39,7 +39,7 @@ class QueueLogHandler(logging.Handler):
 class HedgedMartingaleGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("비트코인 양방향 마틴게일 자동매매 (Gate.io 실거래)")
+        self.root.title("비트코인 선물 자동매매")
         self.root.geometry("720x880")
         self.root.minsize(680, 580)
         self.root.resizable(True, True)
@@ -48,6 +48,9 @@ class HedgedMartingaleGUI:
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self._save_after_id: str | None = None
+        self._status_after_id: str | None = None
+        self.bot = None                 # 실행 중인 봇(상태줄에 포지션을 표시하기 위해 보관)
+        self.exchange_label = ""
 
         self._create_scrollable_container()
         self._build_widgets()
@@ -55,8 +58,8 @@ class HedgedMartingaleGUI:
         self._load_trade_history()
         self._install_log_handler()
         self._poll_log_queue()
-        self._log(f"ℹ️ 프로그램 버전: {core.VERSION}")
-        self._log("ℹ️ 프로그램이 시작되었습니다. API Key 입력 후 '자동매매 시작' 버튼을 눌러주세요.")
+        self._log(f"ℹ️ 자동매매 프로그램 v{core.VERSION}")
+        self._log("ℹ️ API Key를 입력한 뒤 '자동매매 시작' 버튼을 눌러주세요.")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _create_scrollable_container(self) -> None:
@@ -156,7 +159,7 @@ class HedgedMartingaleGUI:
         tk.Label(config_frame, text="포지션 크기 (%):").grid(row=1, column=0, sticky="w")
         self.pos_pct_var = tk.StringVar(value=f"{core.INITIAL_MARGIN_PCT * 100:g}")
         tk.Entry(config_frame, textvariable=self.pos_pct_var, width=18).grid(row=1, column=1, sticky="w", pady=5)
-        tk.Label(config_frame, text="(잔고 대비 1차 진입 마진. 예: 잔고 100 × 레버리지 10배 × 1% ≈ 10 USDT 진입)",
+        tk.Label(config_frame, text="(잔고 대비 진입 비율. 예: 잔고 100 × 레버리지 10배 × 1% ≈ 10 USDT 진입)",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=1, column=2, sticky="w", padx=(8, 0))
 
         # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
@@ -411,7 +414,7 @@ class HedgedMartingaleGUI:
         core.INITIAL_MARGIN_PCT = pos_pct
 
         self._save_credentials()
-        self._log(f"전략 설정 적용: {exchange_name} / 레버리지 {leverage}x / 포지션 크기 {pos_pct*100:g}%")
+        self._log(f"설정 | {exchange_name} | 레버리지 {leverage}배 | 포지션 크기 {pos_pct*100:g}%")
 
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
@@ -431,17 +434,37 @@ class HedgedMartingaleGUI:
                                            on_trade_closed=self._on_trade_closed)
             market_data = core.PublicMarketData(exchange_name)
         except Exception as e:
-            self._log(f"[오류] 계좌 연결 실패: {e}")
+            core.logger.debug("계좌 연결 실패: %s", e)
+            self._log("[오류] 계좌 연결에 실패했습니다. API Key/Secret과 인터넷 연결을 확인해주세요.")
             self.root.after(0, self._set_stopped_ui)
             return
 
-        self.root.after(0, lambda: self.status_var.set(f"상태: 매매 중 (실거래 · {exchange_name})"))
-        self._log(f"{exchange_name} 자동매매를 시작합니다 (실거래 모드).")
+        self.bot = bot
+        self.exchange_label = exchange_name
+        self.root.after(0, self._update_position_status)
+        self._log(f"{exchange_name} 계좌에 연결되었습니다.")
 
         bot.run_forever(market_data, poll_sec=core.POLL_SEC, stop_event=self.stop_event)
 
+        self.bot = None
         self._log("자동매매가 정지되었습니다.")
         self.root.after(0, self._set_stopped_ui)
+
+    def _update_position_status(self) -> None:
+        """상태줄에 현재 보유 포지션을 계속 갱신해서 보여준다(사용자가 매매 상태만 확인 가능하도록)."""
+        bot = self.bot
+        if bot is None:
+            return
+
+        def describe(module) -> str:
+            if not module.in_position:
+                return "없음"
+            return f"{module.total_qty:.6f} BTC @ {module.avg_price:,.2f}"
+
+        self.status_var.set(
+            f"상태: 매매 중 ({self.exchange_label})  |  롱: {describe(bot.long)}  |  숏: {describe(bot.short)}"
+        )
+        self._status_after_id = self.root.after(2000, self._update_position_status)
 
     def _on_stop_clicked(self) -> None:
         self.status_var.set("상태: 정지 중...")
@@ -471,10 +494,10 @@ class HedgedMartingaleGUI:
         """청산될 때마다(매매 스레드에서) 호출된다. 기록에 추가하고 로그에도 한 줄 남긴다."""
         self.trade_history.append(trade)
         self._save_trade_history()
+        side_ko = "롱" if trade["side"] == "LONG" else "숏"
         self._log(
-            f"📊 매매기록 | {trade['side']} {trade['reason']} | "
-            f"진입 {trade['entry_price']:,.2f} → 청산 {trade['exit_price']:,.2f} | "
-            f"수익금 {trade['profit_usdt']:+.2f} USDT ({trade['leveraged_return_pct']:+.2f}%)"
+            f"📊 {side_ko} 거래완료 | 진입 {trade['entry_price']:,.2f} → 청산 {trade['exit_price']:,.2f} | "
+            f"손익 {trade['profit_usdt']:+.2f} USDT ({trade['leveraged_return_pct']:+.2f}%)"
         )
 
     def _show_trade_history(self) -> None:
@@ -539,6 +562,9 @@ class HedgedMartingaleGUI:
         messagebox.showinfo("완료", "매매 기록을 삭제했습니다.")
 
     def _set_stopped_ui(self) -> None:
+        if self._status_after_id is not None:
+            self.root.after_cancel(self._status_after_id)
+            self._status_after_id = None
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.combo_exchange.config(state="readonly")

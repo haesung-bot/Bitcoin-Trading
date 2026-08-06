@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "2026-08-06-m (매매 기록 기능 추가)"
+VERSION = "1.0.0"
 
 import argparse
 import json
@@ -284,7 +284,7 @@ class TelegramNotifier:
         self.chat_id = chat_id
 
     def send(self, text: str) -> None:
-        logger.info("[알림] %s", text.replace("\n", " | "))
+        logger.info("%s", text)
         if not self.token or not self.chat_id:
             return  # 텔레그램 미설정 시 위 로그(화면/파일)로만 알린다
         try:
@@ -339,7 +339,7 @@ class PaperBroker:
         return qty_btc  # 모의매매는 거래소 계약 단위가 없으므로 계산된 수량을 그대로 사용
 
     def fill_order(self, side: Side, is_entry: bool, qty: float, price: float) -> None:
-        logger.info(
+        logger.debug(
             "[모의체결] %s %s qty=%.6f price=%.2f",
             side.value, "진입" if is_entry else "청산", qty, price,
         )
@@ -382,13 +382,13 @@ class LiveBroker:
             if "NO_CHANGE" in str(e):
                 # Gate.io는 이미 설정된 값으로 다시 설정을 시도하면 에러 형태로 응답한다.
                 # 즉 이미 Dual Mode가 켜져 있다는 뜻이라 정상 상태다.
-                logger.info("Hedge/Dual Mode는 이미 설정되어 있습니다 (정상).")
+                logger.debug("Hedge/Dual Mode는 이미 설정되어 있습니다 (정상).")
             else:
-                logger.warning("Hedge/Dual Mode 설정 실패: %s", e)
+                logger.debug("Hedge/Dual Mode 설정 실패: %s", e)
         try:
             self.exchange.set_leverage(leverage, self.symbol)
         except Exception as e:
-            logger.warning("레버리지 설정 실패: %s", e)
+            logger.debug("레버리지 설정 실패: %s", e)
 
     def _read_usdt_balance(self, params: dict) -> float:
         bal = self.exchange.fetch_balance(params)
@@ -410,7 +410,7 @@ class LiveBroker:
             try:
                 balance = self._read_usdt_balance({"unifiedAccount": True})
                 if balance > 0:
-                    logger.info("통합계좌(Unified Account)에서 USDT 잔고를 조회했습니다: %.4f", balance)
+                    logger.debug("통합계좌(Unified Account)에서 USDT 잔고를 조회했습니다: %.4f", balance)
             except Exception as e:
                 logger.debug("통합계좌 잔고 조회 실패: %s", e)
         return balance
@@ -431,10 +431,9 @@ class LiveBroker:
         except Exception:
             contracts = 0.0
         if contracts < min_contracts:
-            logger.warning(
-                "계산된 수량(%.8f BTC)이 거래소 최소 주문(%s계약=%.8f BTC)보다 작아 최소 수량으로 올려서 주문합니다. "
-                "이 경우 실제 리스크가 잔고의 2%%보다 커질 수 있습니다.",
-                qty_btc, min_contracts, min_contracts * contract_size,
+            logger.debug(
+                "계산된 수량(%.8f BTC)이 거래소 최소 주문(%s계약)보다 작아 최소 수량으로 올려서 주문합니다.",
+                qty_btc, min_contracts,
             )
             contracts = float(min_contracts)
         return contracts * contract_size
@@ -450,7 +449,7 @@ class LiveBroker:
         try:
             positions = self.exchange.fetch_positions([self.symbol])
         except Exception as e:
-            logger.warning("포지션 조회 실패(저장된 상태 유지): %s", e)
+            logger.debug("포지션 조회 실패(저장된 상태 유지): %s", e)
             return None
         contract_size = (self.exchange.market(self.symbol).get("contractSize")) or 1
         target = side.value.lower()
@@ -474,10 +473,10 @@ class LiveBroker:
             min_amount = (limits.get("amount") or {}).get("min")
             min_cost = (limits.get("cost") or {}).get("min")
             if min_amount and qty_contracts < min_amount:
-                logger.warning("주문 수량 %.8f계약이 거래소 최소 수량 %.8f계약보다 작습니다. 주문이 거부될 수 있습니다.", qty_contracts, min_amount)
+                logger.debug("주문 수량 %.8f계약이 거래소 최소 수량 %.8f계약보다 작습니다.", qty_contracts, min_amount)
             notional = qty_contracts * contract_size * price
             if min_cost and notional < min_cost:
-                logger.warning("주문 금액 %.2f이 거래소 최소 주문금액 %.2f보다 작습니다. 주문이 거부될 수 있습니다.", notional, min_cost)
+                logger.debug("주문 금액 %.2f이 거래소 최소 주문금액 %.2f보다 작습니다.", notional, min_cost)
         except Exception as e:
             logger.debug("최소 주문 조건 확인 실패(무시): %s", e)
 
@@ -511,15 +510,12 @@ class LiveBroker:
             qty_contracts = float(self.exchange.amount_to_precision(self.symbol, round(qty / contract_size, 8)))
         except Exception:
             qty_contracts = 0.0
-        logger.info(
+        logger.debug(
             "주문 실행: BTC수량=%.8f / 계약크기=%s / 계약수=%.4f / 방향=%s / %s / 가격=%.2f",
             qty, contract_size, qty_contracts, side.value, "진입" if is_entry else "청산", price,
         )
         if qty_contracts <= 0:
-            raise RuntimeError(
-                f"주문 수량이 거래소 최소 단위(1계약={contract_size} BTC) 미만이라 0이 되었습니다 "
-                f"(BTC수량={qty:.8f}). 계좌에 실제 USDT 잔고가 있는지 확인하세요."
-            )
+            raise RuntimeError("주문 가능 최소 금액에 미달합니다. 계좌 잔고를 확인해주세요.")
         self._check_min_notional(qty_contracts, price)
         if side == Side.LONG:
             order_side = "buy" if is_entry else "sell"
@@ -544,8 +540,8 @@ def make_qty_provider(broker) -> Callable[[float], float]:
         balance = broker.get_balance()
         notional_usdt = balance * LEVERAGE * INITIAL_MARGIN_PCT  # 레버리지한 잔고의 2%
         qty_btc = notional_usdt / price
-        logger.info(
-            "1차 진입 규모 계산: 잔고=%.4f USDT x 레버리지 %sx x %.0f%% = 주문금액 %.4f USDT (= %.8f BTC)",
+        logger.debug(
+            "진입 규모 계산: 잔고=%.4f x %sx x %.2f%% = %.4f USDT (= %.8f BTC)",
             balance, LEVERAGE, INITIAL_MARGIN_PCT * 100, notional_usdt, qty_btc,
         )
         return broker.quantize_qty(qty_btc, price)
@@ -731,7 +727,7 @@ class MartingaleModule:
 
     def _take_profit(self, price: float) -> None:
         pnl = self._close_all(price)
-        self._notify_close(price, "익절(TP)", pnl)
+        self._notify_close(price, "익절", pnl)
         self._record_trade(price, "익절", pnl)
         self._reset()
         self.consecutive_sl = 0
@@ -739,7 +735,7 @@ class MartingaleModule:
 
     def _stop_loss(self, price: float) -> None:
         pnl = self._close_all(price)
-        self._notify_close(price, "하드 손절(SL) → 모듈 리셋", pnl)
+        self._notify_close(price, "손절", pnl)
         self._record_trade(price, "손절", pnl)
         self._reset()
         self.consecutive_sl += 1
@@ -748,26 +744,32 @@ class MartingaleModule:
             self.halted = True
             self._notify_halt()
 
+    # ───── 사용자 화면용 알림 ─────
+    # 배포용이므로 내부 전략(진입 조건, 단계별 물타기, 쿨다운, 안전장치 기준 등)이 드러나지 않도록
+    # 사용자가 필요한 정보(방향/금액/가격/보유 포지션/손익/잔고)만 간결하게 보여준다.
+    @property
+    def _side_ko(self) -> str:
+        return "롱" if self.side == Side.LONG else "숏"
+
     def _notify_halt(self) -> None:
         self.notifier.send(
-            f"[{self.mode_label}] {self.side.value} 자동 정지(회로차단기 작동)\n"
-            f"연속 손절 {self.consecutive_sl}회 발생 → 추세 역행 반복 가능성.\n"
-            f"수동으로 재시작하거나 resume()을 호출해야 다시 진입합니다."
+            f"⏸ {self._side_ko} 자동 정지 (안전장치 작동)\n"
+            f"손실이 반복되어 {self._side_ko} 매매를 멈췄습니다. 다시 시작하려면 프로그램을 재시작하세요."
         )
 
     def _notify_entry(self, price: float, qty: float) -> None:
+        amount_usdt = qty * price
         self.notifier.send(
-            f"[{self.mode_label}] {self.side.value} {self.step}차 진입\n"
-            f"가격: {price:,.2f} / 이번수량: {qty:.6f} / 총수량: {self.total_qty:.6f}\n"
-            f"평단가: {self.avg_price:,.2f} / 잔고: {self.broker.get_balance():,.2f}"
+            f"▶ {self._side_ko} 진입 | 금액 {amount_usdt:,.2f} USDT | 가격 {price:,.2f}\n"
+            f"   보유 {self.total_qty:.6f} BTC | 평균단가 {self.avg_price:,.2f} | "
+            f"잔고 {self.broker.get_balance():,.2f} USDT"
         )
 
     def _notify_close(self, price: float, reason: str, pnl: float) -> None:
+        result = "수익" if pnl >= 0 else "손실"
         self.notifier.send(
-            f"[{self.mode_label}] {self.side.value} {reason}\n"
-            f"청산가: {price:,.2f} / 평단가: {self.avg_price:,.2f} / 수량: {self.total_qty:.6f}\n"
-            f"실현손익: {pnl:,.2f} / 잔고: {self.broker.get_balance():,.2f}\n"
-            f"→ {COOLDOWN_SEC // 60}분 쿨다운 후 재진입 조건 대기"
+            f"■ {self._side_ko} 청산 | {result} {pnl:+,.2f} USDT | 가격 {price:,.2f}\n"
+            f"   잔고 {self.broker.get_balance():,.2f} USDT"
         )
 
 
@@ -791,15 +793,16 @@ class HedgedMartingaleBot:
             with open(self.state_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
-            logger.warning("이전 매매 상태 파일을 읽지 못했습니다(무시하고 처음부터 시작): %s", e)
+            logger.debug("이전 매매 상태 파일을 읽지 못했습니다: %s", e)
             return
         self.long.load_state(data.get("long", {}))
         self.short.load_state(data.get("short", {}))
         if self.long.in_position or self.short.in_position:
-            logger.info(
-                "이전 매매 상태를 복원했습니다 (LONG step=%d avg=%s / SHORT step=%d avg=%s)",
+            logger.debug(
+                "이전 매매 상태 복원 (LONG step=%d avg=%s / SHORT step=%d avg=%s)",
                 self.long.step, self.long.avg_price, self.short.step, self.short.avg_price,
             )
+            logger.info("이전 매매 상태를 불러왔습니다.")
         self._sync_with_exchange()
 
     def _sync_with_exchange(self) -> None:
@@ -816,14 +819,17 @@ class HedgedMartingaleBot:
             had = module.in_position
             synced = module.sync_from_exchange(pos["qty"], pos.get("entry_price"), pos.get("contract_size") or 1)
             if synced:
-                msg = (
-                    f"{module.side.value} 거래소 실제 포지션에 맞춰 동기화했습니다 "
-                    f"(수량={module.total_qty:.6f}, 평단={module.avg_price:.2f}, step={module.step})."
+                logger.debug(
+                    "%s 동기화 (수량=%.6f, 평단=%.2f, step=%d)",
+                    module.side.value, module.total_qty, module.avg_price, module.step,
                 )
-                logger.info(msg)
-                self.notifier.send(f"[{module.mode_label}] {msg}")
+                side_ko = "롱" if module.side == Side.LONG else "숏"
+                self.notifier.send(
+                    f"🔄 {side_ko} 기존 포지션 확인 | 보유 {module.total_qty:.6f} BTC | "
+                    f"평균단가 {module.avg_price:,.2f}"
+                )
             elif had:
-                logger.info("%s 거래소에 실제 포지션이 없어 내부 상태를 초기화했습니다.", module.side.value)
+                logger.debug("%s 거래소에 실제 포지션이 없어 내부 상태를 초기화했습니다.", module.side.value)
 
     def _save_state(self) -> None:
         if not self.state_path:
@@ -832,7 +838,7 @@ class HedgedMartingaleBot:
             with open(self.state_path, "w", encoding="utf-8") as f:
                 json.dump({"long": self.long.to_state(), "short": self.short.to_state()}, f)
         except Exception as e:
-            logger.warning("매매 상태 저장 실패: %s", e)
+            logger.debug("매매 상태 저장 실패: %s", e)
 
     def on_price(self, price: float, closes_window: List[float], now: Optional[float] = None) -> None:
         rsi = Indicators.rsi(closes_window)
@@ -842,24 +848,31 @@ class HedgedMartingaleBot:
         self._save_state()
 
     def run_forever(self, market_data: PublicMarketData, poll_sec: int = POLL_SEC, stop_event: Optional[threading.Event] = None) -> None:
-        logger.info("프로그램 버전: %s", VERSION)
-        logger.info("자동매매 시작 (%s, 레버리지 %sx, %s)", self.long.mode_label, LEVERAGE, TIMEFRAME)
+        logger.debug("버전 %s / %s / 레버리지 %sx / %s", VERSION, self.long.mode_label, LEVERAGE, TIMEFRAME)
         try:
-            logger.info("현재 계좌 주문가능 잔고: %.4f USDT", self.broker.get_balance())
+            logger.info("계좌 잔고: %s USDT", f"{self.broker.get_balance():,.2f}")
         except Exception as e:
-            logger.warning("잔고 조회 실패: %s", e)
+            logger.debug("잔고 조회 실패: %s", e)
+            logger.warning("잔고를 불러오지 못했습니다. API 키와 선물 지갑 잔고를 확인해주세요.")
+        logger.info("자동매매를 시작했습니다. 매수/매도 기회를 찾는 중입니다...")
+
+        error_notified = False
         while stop_event is None or not stop_event.is_set():
             try:
                 closes = market_data.get_closes()
                 self.on_price(closes[-1], closes)
+                error_notified = False
             except Exception as e:
-                logger.warning("루프 오류: %s", e)
+                logger.debug("루프 오류: %s", e)
+                if not error_notified:  # 같은 오류가 반복될 때 화면을 도배하지 않도록 1회만 안내
+                    logger.warning("일시적으로 시세를 불러오지 못했습니다. 자동으로 다시 시도합니다.")
+                    error_notified = True
             if stop_event is not None:
                 if stop_event.wait(poll_sec):
                     break
             else:
                 time.sleep(poll_sec)
-        logger.info("자동매매 루프가 정지되었습니다.")
+        logger.info("자동매매를 정지했습니다.")
 
 
 # ───────────── 가상 차트 데이터 정성 테스트 ─────────────
