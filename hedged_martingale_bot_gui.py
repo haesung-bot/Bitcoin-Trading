@@ -20,6 +20,7 @@ import os
 import queue
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import messagebox, ttk
 
 import hedged_martingale_bot as core
@@ -252,10 +253,11 @@ class HedgedMartingaleGUI:
     def _show_api_guide(self) -> None:
         name = self.exchange_var.get()
         guide = core.EXCHANGE_API_GUIDES.get(name, "안내 준비 중입니다.")
+        ref = core.EXCHANGE_REFERRALS.get(name)
 
         win = tk.Toplevel(self.root)
         win.title(f"{name} API Key 발급 방법")
-        win.geometry("640x620")
+        win.geometry("660x660")
         tk.Label(win, text=f"{name} API Key 발급 방법", font=("맑은 고딕", 13, "bold")).pack(pady=(12, 6))
 
         text_frame = tk.Frame(win)
@@ -268,7 +270,35 @@ class HedgedMartingaleGUI:
         txt.insert("1.0", guide)
         txt.config(state="disabled")
 
+        if ref:
+            ref_row = tk.Frame(win)
+            ref_row.pack(pady=(0, 6))
+            tk.Button(ref_row, text="🔗 가입 링크 열기", bg="#f39c12", fg="white",
+                      font=("맑은 고딕", 10, "bold"),
+                      command=lambda: self._open_link(ref["link"])).pack(side="left", padx=4)
+            tk.Button(ref_row, text="📋 레퍼럴 코드 복사", bg="#34495e", fg="white",
+                      font=("맑은 고딕", 10, "bold"),
+                      command=lambda: self._copy_to_clipboard(ref["code"], "레퍼럴 코드")).pack(side="left", padx=4)
+            tk.Button(ref_row, text="📋 가입 링크 복사", bg="#34495e", fg="white",
+                      font=("맑은 고딕", 10, "bold"),
+                      command=lambda: self._copy_to_clipboard(ref["link"], "가입 링크")).pack(side="left", padx=4)
+
         tk.Button(win, text="닫기", command=win.destroy, width=12).pack(pady=(0, 12))
+
+    def _open_link(self, url: str) -> None:
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            messagebox.showerror("오류", f"브라우저를 열지 못했습니다.\n주소를 직접 복사해서 이용해주세요.\n\n{e}")
+
+    def _copy_to_clipboard(self, text: str, label: str) -> None:
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update()  # 프로그램을 닫아도 클립보드에 남도록 반영
+            messagebox.showinfo("복사 완료", f"{label}를 복사했습니다.\n\n{text}")
+        except Exception as e:
+            messagebox.showerror("오류", f"복사하지 못했습니다.\n\n{e}")
 
     def _show_caution(self) -> None:
         win = tk.Toplevel(self.root)

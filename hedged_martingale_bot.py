@@ -91,6 +91,52 @@ EXCHANGE_SYMBOLS = {
 }
 
 
+# 거래소별 가입(레퍼럴) 정보. 가입 시 코드를 입력하면 수수료 할인 혜택을 받을 수 있다.
+EXCHANGE_REFERRALS = {
+    "Gate.io": {
+        "code": "VGAXVF1ZAG",
+        "link": ("https://www.gate.com/referral/registry?ref=VGAXVF1ZAG&ref_type=103"
+                 "&page=earnVoucher&utm_cmp=PEYEQdSb"),
+    },
+    "Binance": {
+        "code": "CPA_00OGAWC3CJ",
+        "link": "https://www.binance.com/en/activity/referral/offers/claim?ref=CPA_00OGAWC3CJ",
+    },
+    "Bybit": {
+        "code": "99MWYJ",
+        "link": "https://www.bybit.com/en/invite/?ref=99MWYJ&medium=referral&utm_campaign=evergreen",
+    },
+    "OKX": {
+        "code": "83339059",
+        "link": "https://www.okx.com/join/83339059",
+    },
+    "Bitget": {
+        "code": "wxf3",
+        "link": ("https://www.bitget.com/asia/expressly?channelCode=3y85&groupId=590374"
+                 "&languageType=3&vipCode=wxf3"),
+    },
+}
+
+
+def _referral_note(exchange_name: str) -> str:
+    """API 발급 안내문 맨 앞에 붙일 가입(레퍼럴) 안내 문구."""
+    ref = EXCHANGE_REFERRALS.get(exchange_name)
+    if not ref:
+        return ""
+    return (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"【{exchange_name} 계정이 아직 없다면 — 가입 안내】\n\n"
+        f"  · 레퍼럴 코드 : {ref['code']}\n"
+        f"  · 가입 링크 : {ref['link']}\n\n"
+        "  아래쪽 '🔗 가입 링크 열기' 버튼을 누르면 브라우저에서 바로 열립니다.\n"
+        "  '📋 레퍼럴 코드 복사' 버튼으로 코드를 복사해 가입 화면에 붙여넣으세요.\n"
+        "  가입할 때 레퍼럴 코드를 입력하면 거래 수수료 할인 혜택을 받을 수 있습니다.\n"
+        "  (이미 계정이 있다면 이 부분은 건너뛰고 아래 발급 방법부터 보시면 됩니다.)\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "【API Key 발급 방법】\n\n"
+    )
+
+
 def _save_warning(needs_passphrase: bool) -> str:
     if needs_passphrase:
         return (
@@ -119,6 +165,7 @@ _COMMON_HEDGE_NOTE = (
 
 EXCHANGE_API_GUIDES = {
     "Gate.io": (
+        _referral_note("Gate.io") +
         "1. Gate.io 로그인 → 우측 상단 프로필 아이콘 클릭 → 'API Management(API 관리)' 이동\n"
         "2. 'Create New Key(새 키 생성)' 클릭\n"
         "3. API Key Type은 'API v4 Key' 선택\n"
@@ -134,6 +181,7 @@ EXCHANGE_API_GUIDES = {
         + _save_warning(False) + _COMMON_HEDGE_NOTE
     ),
     "Binance": (
+        _referral_note("Binance") +
         "1. Binance 로그인 → 우측 상단 프로필 아이콘 → 'API Management' 이동\n"
         "2. API 이름 입력 후 'Create' 클릭\n"
         "3. 이메일 인증 및 2FA(OTP) 인증 완료\n"
@@ -147,6 +195,7 @@ EXCHANGE_API_GUIDES = {
         + _save_warning(False) + _COMMON_HEDGE_NOTE
     ),
     "Bybit": (
+        _referral_note("Bybit") +
         "1. Bybit 로그인 → 프로필 아이콘 → 'API' 클릭\n"
         "2. 'API Management' → 'Create New Key' → 'System-generated API Keys' 선택\n"
         "3. 용도(API Transaction) 선택 및 이름 입력\n"
@@ -161,6 +210,7 @@ EXCHANGE_API_GUIDES = {
         + _save_warning(False) + _COMMON_HEDGE_NOTE
     ),
     "OKX": (
+        _referral_note("OKX") +
         "1. OKX 로그인 → 프로필 아이콘 → 'API' 또는 'API Key' 메뉴 이동\n"
         "2. 'Create API Key' 클릭\n"
         "3. API 이름 입력, 'Passphrase(비밀번호)' 설정 — API Key/Secret Key와는 별개의 항목입니다\n"
@@ -174,6 +224,7 @@ EXCHANGE_API_GUIDES = {
         + _save_warning(True) + _COMMON_HEDGE_NOTE
     ),
     "Bitget": (
+        _referral_note("Bitget") +
         "1. Bitget 로그인 → 프로필 아이콘 → 'API Management' 이동\n"
         "2. 'Create New API' → 'System-generated API Key' 선택\n"
         "3. 'Notes(이름)' 입력, 'Passphrase' 설정 (영문/숫자 8자 이상, 특수문자 사용 불가)\n"
