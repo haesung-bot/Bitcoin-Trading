@@ -3,12 +3,12 @@ hedged_martingale_bot.py
 비트코인 10배 레버리지 양방향(Hedge Mode) 마틴게일 자동매매 모듈
 
 - 기본 실행 모드: 모의 매매(Paper Trading). 실거래는 --live 옵션 + API 키가 있을 때만 동작.
-- 기본 거래소는 Gate.io 무기한 선물(USDT-M swap). EXCHANGE_ID 환경변수로 다른 ccxt 지원 거래소로 변경 가능.
+- Gate.io/Binance/Bybit/OKX/Bitget 무기한 선물(USDT-M)을 지원하며 GUI에서 거래소를 선택한다.
 - 롱/숏은 완전히 독립된 상태머신(MartingaleModule)이며 서로의 진입/청산에 영향을 주지 않는다.
 - 물타기 간격(STEP_TRIGGER_PCT)과 손절(STOP_LOSS_PCT)은 독립: 평단가 대비 STEP_TRIGGER_PCT마다
   1→2→4→8배 추가 진입(최대 MAX_STEPS단계)하고, 평단가 대비 STOP_LOSS_PCT에 도달하면 단계와
   무관하게 전량 손절한다. 익절은 평단가 대비 +TP_PCT.
-- 시세(15분봉 종가)는 실제 매매할 거래소(EXCHANGE_ID)에서 ccxt 공개 API로 직접 가져온다(인증 불필요).
+- 시세(15분봉 종가)는 실제 매매할 거래소에서 ccxt 공개 API로 직접 가져온다(인증 불필요).
 - 실거래 시에만 ccxt로 Hedge Mode(Gate.io는 Dual Mode) + 레버리지 10배를 계좌에 설정한다.
 - Gate.io Dual Mode는 매수/매도 방향이 곧 롱/숏 슬롯을 가리키고, 청산 주문에만 reduceOnly를 붙인다.
   바이낸스 Hedge Mode는 반대로 positionSide로 방향을 지정하고 reduceOnly는 보내면 안 된다(거래소별 분기 처리).
@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "2026-08-06-k (UI를 기존 봇 스타일로 변경)"
+VERSION = "2026-08-06-l (거래소 5종 선택 + API 발급안내)"
 
 import argparse
 import json
@@ -71,25 +71,143 @@ try:
 except ImportError:
     ccxt = None
 
-# ccxt 버전에 따라 거래소 클래스 이름이 다를 수 있다(예: Gate.io는 gate/gateio).
-_EXCHANGE_CLASS_ALIASES = {
-    "gate": ("gate", "gateio"),
-    "gateio": ("gate", "gateio"),
+# ───────────── 지원 거래소 정의 ─────────────
+# ccxt 버전에 따라 클래스 이름이 다를 수 있어(예: Gate.io는 gate/gateio) 후보를 순서대로 확인한다.
+EXCHANGE_OPTIONS = {
+    "Gate.io": {"ccxt_ids": ("gate", "gateio"), "options": {"defaultType": "swap"}, "needs_passphrase": False},
+    "Binance": {"ccxt_ids": ("binance",), "options": {"defaultType": "future"}, "needs_passphrase": False},
+    "Bybit":   {"ccxt_ids": ("bybit",), "options": {"defaultType": "swap", "subType": "linear"}, "needs_passphrase": False},
+    "OKX":     {"ccxt_ids": ("okx",), "options": {"defaultType": "swap"}, "needs_passphrase": True},
+    "Bitget":  {"ccxt_ids": ("bitget",), "options": {"defaultType": "swap"}, "needs_passphrase": True},
+}
+
+# 거래소별 무기한 선물 심볼(ccxt 통일 심볼)
+EXCHANGE_SYMBOLS = {
+    "Gate.io": "BTC/USDT:USDT",
+    "Binance": "BTC/USDT:USDT",
+    "Bybit":   "BTC/USDT:USDT",
+    "OKX":     "BTC/USDT:USDT",
+    "Bitget":  "BTC/USDT:USDT",
 }
 
 
-def _resolve_exchange_class(exchange_id: str):
+def _save_warning(needs_passphrase: bool) -> str:
+    if needs_passphrase:
+        return (
+            "\n\n⚠️⚠️⚠️ 발급 완료 즉시, API Key / Secret Key / Passphrase 3가지를 "
+            "메모장(또는 안전한 곳)에 반드시 복사해서 저장하세요!\n"
+            "Secret Key와 Passphrase는 이 화면을 벗어나면 다시는 확인할 수 없고, "
+            "분실 시 API Key를 처음부터 새로 발급받아야 합니다."
+        )
+    return (
+        "\n\n⚠️⚠️⚠️ 발급 완료 즉시, API Key / Secret Key를 메모장(또는 안전한 곳)에 반드시 복사해서 저장하세요!\n"
+        "Secret Key는 이 화면을 벗어나면 다시는 확인할 수 없고, 분실 시 API Key를 처음부터 새로 발급받아야 합니다."
+    )
+
+
+_COMMON_HEDGE_NOTE = (
+    "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "【이 프로그램 사용을 위한 필수 준비】\n"
+    "1) 선물(무기한) 지갑에 USDT를 입금해두세요. 현물 지갑에만 있으면 잔고가 0으로 조회됩니다.\n"
+    "2) 이 봇은 롱/숏을 동시에 잡는 양방향(헤지) 모드를 사용합니다. 프로그램이 시작할 때\n"
+    "   자동으로 양방향 모드를 켜지만, 이미 열려 있는 포지션이나 미체결 주문이 있으면 실패합니다.\n"
+    "   → 처음 시작 전에는 포지션/주문을 모두 정리해두세요.\n"
+    "3) API 권한은 '선물(Futures/Swap) 거래'가 반드시 켜져 있어야 합니다.\n"
+    "4) 보안을 위해 '출금(Withdraw)' 권한은 절대 켜지 마세요. 거래 권한만 있으면 충분합니다.\n"
+    "5) 가능하면 IP 화이트리스트에 이 프로그램을 돌릴 PC의 IP를 등록하세요."
+)
+
+EXCHANGE_API_GUIDES = {
+    "Gate.io": (
+        "1. Gate.io 로그인 → 우측 상단 프로필 아이콘 클릭 → 'API Management(API 관리)' 이동\n"
+        "2. 'Create New Key(새 키 생성)' 클릭\n"
+        "3. API Key Type은 'API v4 Key' 선택\n"
+        "4. Permissions(권한)에서 'Perpetual Futures(무기한 선물)' 체크 + 'Read And Write' 권한 부여\n"
+        "5. (선택) IP 화이트리스트 등록으로 보안 강화\n"
+        "6. 자금 비밀번호 입력 + 2FA(구글 인증 등) 인증\n"
+        "7. API Key, Secret Key 발급 완료\n\n"
+        "※ 주의: 선물 지갑에 USDT를 한 번도 이체한 적이 없으면 'Perpetual Futures' 권한이 있어도 "
+        "'USER_NOT_FOUND' 오류가 날 수 있습니다. 현물→선물 지갑으로 소액이라도 먼저 이체해두세요.\n"
+        "※ Gate.io는 자금이 '통합계좌(Unified Account)'에 있으면 일반 선물계좌 조회로 잔고가 0으로 "
+        "보일 수 있습니다. 이 프로그램은 두 곳을 모두 조회하니, 잔고가 0으로 뜨면 어느 지갑에 자금이 "
+        "있는지 확인해보세요."
+        + _save_warning(False) + _COMMON_HEDGE_NOTE
+    ),
+    "Binance": (
+        "1. Binance 로그인 → 우측 상단 프로필 아이콘 → 'API Management' 이동\n"
+        "2. API 이름 입력 후 'Create' 클릭\n"
+        "3. 이메일 인증 및 2FA(OTP) 인증 완료\n"
+        "4. API Key, Secret Key 발급 (Secret Key는 이 화면에서만 표시됨)\n"
+        "5. 'Edit restrictions' 클릭 → 'Enable Futures' 체크 → 저장\n"
+        "6. (선택) 'Restrict access to trusted IPs only'로 IP 제한 설정\n\n"
+        "※ 주의: 선물 계좌를 먼저 개설(활성화)해두지 않은 상태에서 만든 키는 'Enable Futures' 항목 자체가 "
+        "없거나 선택할 수 없습니다. 반드시 선물 계좌 개설 후 키를 발급하세요.\n"
+        "※ 바이낸스는 계정 설정에서 'Hedge Mode(양방향 포지션)'를 미리 켜두면 더 안정적입니다. "
+        "(선물 화면 → 설정 → 포지션 모드 → 헤지 모드)"
+        + _save_warning(False) + _COMMON_HEDGE_NOTE
+    ),
+    "Bybit": (
+        "1. Bybit 로그인 → 프로필 아이콘 → 'API' 클릭\n"
+        "2. 'API Management' → 'Create New Key' → 'System-generated API Keys' 선택\n"
+        "3. 용도(API Transaction) 선택 및 이름 입력\n"
+        "4. 권한에서 'Contract(파생상품/Derivatives) - Orders & Positions' 체크\n"
+        "5. (선택) IP 제한 설정 — Bybit는 IP 미설정 시 키 유효기간이 90일로 제한됩니다\n"
+        "6. 2FA 인증 후 생성\n\n"
+        "※ 참고: Bybit는 통합계좌(UTA) 방식이라 선물 지갑(Derivatives/Unified)에 자금이 있어야 "
+        "잔고가 정상 조회됩니다.\n"
+        "※ 중요: 통합계좌(UTA)는 일방향(One-way) 모드만 지원하는 경우가 있습니다. 양방향(헤지) 모드가 "
+        "지원되지 않으면 이 봇의 롱/숏 동시 운용이 정상 동작하지 않을 수 있으니, Bybit 선물 화면에서 "
+        "포지션 모드를 '헤지 모드'로 바꿀 수 있는지 먼저 확인하세요."
+        + _save_warning(False) + _COMMON_HEDGE_NOTE
+    ),
+    "OKX": (
+        "1. OKX 로그인 → 프로필 아이콘 → 'API' 또는 'API Key' 메뉴 이동\n"
+        "2. 'Create API Key' 클릭\n"
+        "3. API 이름 입력, 'Passphrase(비밀번호)' 설정 — API Key/Secret Key와는 별개의 항목입니다\n"
+        "4. Permissions(권한)에서 'Trade(거래)' 체크\n"
+        "5. (선택) IP 화이트리스트 등록\n"
+        "6. 2FA 인증 후 생성\n\n"
+        "※ 중요: OKX는 API Key, Secret Key 외에 'Passphrase'까지 총 3개의 값이 필요합니다. "
+        "이 프로그램 화면의 'Passphrase' 입력칸에도 반드시 함께 입력해주세요.\n"
+        "※ OKX는 계정 모드가 중요합니다. 거래 화면에서 계정 모드를 '단일 통화 마진' 이상으로 설정하고, "
+        "포지션 모드를 '양방향 포지션(Long/Short mode)'으로 바꿔두세요."
+        + _save_warning(True) + _COMMON_HEDGE_NOTE
+    ),
+    "Bitget": (
+        "1. Bitget 로그인 → 프로필 아이콘 → 'API Management' 이동\n"
+        "2. 'Create New API' → 'System-generated API Key' 선택\n"
+        "3. 'Notes(이름)' 입력, 'Passphrase' 설정 (영문/숫자 8자 이상, 특수문자 사용 불가)\n"
+        "4. 권한에서 'Read-write' + 'Futures(선물) - Orders & Holdings' 체크\n"
+        "5. (선택) IP 화이트리스트 등록\n"
+        "6. 2FA 인증 후 생성\n\n"
+        "※ 중요: Bitget도 API Key, Secret Key 외에 'Passphrase'까지 총 3개의 값이 필요합니다. "
+        "이 프로그램 화면의 'Passphrase' 입력칸에도 반드시 함께 입력해주세요. "
+        "Passphrase를 잊으면 키를 재발급해야 합니다.\n"
+        "※ Bitget 선물 화면에서 포지션 모드를 '양방향(Hedge) 모드'로, 마진 모드를 원하는 값으로 "
+        "미리 설정해두세요."
+        + _save_warning(True) + _COMMON_HEDGE_NOTE
+    ),
+}
+
+
+def _resolve_exchange_class(exchange_name: str):
+    """거래소 표시 이름(예: 'Gate.io')에 맞는 ccxt 클래스를 반환한다."""
     if ccxt is None:
         raise RuntimeError("ccxt가 설치되어 있지 않습니다. 'pip install ccxt'를 실행하세요.")
-    for candidate in _EXCHANGE_CLASS_ALIASES.get(exchange_id, (exchange_id,)):
+    spec = EXCHANGE_OPTIONS.get(exchange_name)
+    if spec is None:
+        raise RuntimeError(f"지원하지 않는 거래소입니다: {exchange_name}")
+    for candidate in spec["ccxt_ids"]:
         cls = getattr(ccxt, candidate, None)
         if cls is not None:
             return cls
-    raise RuntimeError(f"ccxt에서 거래소 '{exchange_id}'를 찾을 수 없습니다. 'pip install -U ccxt'로 업데이트하세요.")
+    raise RuntimeError(
+        f"ccxt 라이브러리에서 {exchange_name} 지원을 찾을 수 없습니다. 'pip install -U ccxt'로 업데이트하세요."
+    )
 
 
 # ───────────── 전략 설정값 ─────────────
-EXCHANGE_ID = os.environ.get("EXCHANGE_ID", "gateio")   # gateio, binance 등 ccxt 지원 거래소
+EXCHANGE_NAME = os.environ.get("EXCHANGE_NAME", "Gate.io")  # EXCHANGE_OPTIONS의 키 (Gate.io/Binance/Bybit/OKX/Bitget)
 SYMBOL = os.environ.get("SYMBOL", "BTC/USDT:USDT")
 TIMEFRAME = "15m"
 LEVERAGE = 10
@@ -165,8 +283,7 @@ class TelegramNotifier:
     def send(self, text: str) -> None:
         logger.info("[알림] %s", text.replace("\n", " | "))
         if not self.token or not self.chat_id:
-            logger.warning("텔레그램 토큰 또는 Chat ID가 비어 있어 메시지를 보내지 않습니다. GUI에 두 값을 입력했는지 확인하세요.")
-            return
+            return  # 텔레그램 미설정 시 위 로그(화면/파일)로만 알린다
         try:
             url = f"https://api.telegram.org/bot{self.token}/sendMessage"
             resp = requests.post(url, data={"chat_id": self.chat_id, "text": text}, timeout=10)
@@ -183,11 +300,14 @@ class TelegramNotifier:
 
 # ───────────── 시세 데이터 (공개 API, 인증 불필요) ─────────────
 class PublicMarketData:
-    """실제 매매할 거래소(EXCHANGE_ID)와 동일한 곳에서 ccxt 공개 API로 캔들을 가져온다. API 키 불필요."""
+    """실제 매매할 거래소와 동일한 곳에서 ccxt 공개 API로 캔들을 가져온다. API 키 불필요."""
 
-    def __init__(self, exchange_id: str = EXCHANGE_ID, symbol: str = SYMBOL, timeframe: str = TIMEFRAME, limit: int = 100):
-        exchange_cls = _resolve_exchange_class(exchange_id)
-        self.exchange = exchange_cls({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+    def __init__(self, exchange_name: str = None, symbol: str = None, timeframe: str = TIMEFRAME, limit: int = 100):
+        exchange_name = exchange_name or EXCHANGE_NAME
+        symbol = symbol or EXCHANGE_SYMBOLS.get(exchange_name, SYMBOL)
+        exchange_cls = _resolve_exchange_class(exchange_name)
+        opts = dict(EXCHANGE_OPTIONS[exchange_name]["options"])
+        self.exchange = exchange_cls({"enableRateLimit": True, "options": opts})
         self.symbol = symbol
         self.timeframe = timeframe
         self.limit = limit
@@ -228,26 +348,26 @@ class PaperBroker:
         return None  # 모의매매는 거래소 실포지션이 없으므로 동기화하지 않음(저장된 상태 유지)
 
 
-_EXCHANGE_DEFAULT_TYPE = {
-    "gate": "swap",
-    "gateio": "swap",
-    "binance": "future",
-}
-
-
 class LiveBroker:
-    """실거래 브로커. 최초 연결 시 계좌에 Hedge Mode(Gate.io는 Dual Mode)와 레버리지 10배를 설정한다."""
+    """실거래 브로커. 최초 연결 시 계좌에 양방향(Hedge/Dual) 모드와 레버리지를 설정한다."""
 
-    def __init__(self, exchange_id: str, api_key: str, api_secret: str, symbol: str = SYMBOL, leverage: Optional[int] = None):
-        exchange_cls = _resolve_exchange_class(exchange_id)
-        self.exchange_id = exchange_id
-        self.exchange = exchange_cls({
+    def __init__(self, exchange_name: str, api_key: str, api_secret: str, passphrase: str = "",
+                 symbol: str = None, leverage: Optional[int] = None):
+        exchange_cls = _resolve_exchange_class(exchange_name)
+        spec = EXCHANGE_OPTIONS[exchange_name]
+        self.exchange_name = exchange_name
+        config = {
             "apiKey": api_key,
             "secret": api_secret,
             "enableRateLimit": True,
-            "options": {"defaultType": _EXCHANGE_DEFAULT_TYPE.get(exchange_id, "swap")},
-        })
-        self.symbol = symbol
+            "options": dict(spec["options"]),
+        }
+        if spec["needs_passphrase"]:
+            if not passphrase:
+                raise RuntimeError(f"{exchange_name}는 Passphrase가 필요합니다. 입력해주세요.")
+            config["password"] = passphrase
+        self.exchange = exchange_cls(config)
+        self.symbol = symbol or EXCHANGE_SYMBOLS.get(exchange_name, SYMBOL)
         self.exchange.load_markets()  # market()/set_position_mode()가 미리 로드된 마켓 정보를 필요로 함
         # leverage 미지정 시 실행 시점의 전역 LEVERAGE를 사용(GUI에서 변경한 값이 반영되도록).
         self._setup_account(LEVERAGE if leverage is None else leverage)
@@ -283,7 +403,7 @@ class LiveBroker:
             logger.warning("잔고 조회 실패: %s", e)
             balance = 0.0
         # 2) 0이면 통합계좌(Unified Account)에 자금이 있을 수 있어 재조회
-        if balance <= 0 and self.exchange_id in ("gate", "gateio"):
+        if balance <= 0 and self.exchange_name == "Gate.io":
             try:
                 balance = self._read_usdt_balance({"unifiedAccount": True})
                 if balance > 0:
@@ -359,13 +479,23 @@ class LiveBroker:
             logger.debug("최소 주문 조건 확인 실패(무시): %s", e)
 
     def _order_params(self, side: Side, is_entry: bool) -> dict:
-        if self.exchange_id == "binance":
-            # 바이낸스 Hedge Mode: positionSide로 방향을 지정하며, reduceOnly를 함께 보내면
-            # "Parameter 'reduceOnly' sent when not required" 오류로 주문이 거부된다.
+        """거래소별 양방향(헤지) 모드 주문 파라미터를 만든다.
+
+        거래소마다 롱/숏 슬롯을 지정하는 방식이 완전히 다르다:
+        - Binance : positionSide(LONG/SHORT)로 지정. reduceOnly를 함께 보내면 주문이 거부된다.
+        - Gate.io : 매수/매도 방향이 곧 롱/숏 슬롯. 청산 주문에만 reduceOnly를 붙인다.
+        - Bybit/OKX/Bitget : ccxt의 통일 파라미터 hedged=True를 쓰면 각각 positionIdx /
+          posSide 를 알아서 채워준다. 청산은 hedged+reduceOnly 조합으로 반대 슬롯이 아닌
+          해당 슬롯을 줄이도록 처리된다.
+        """
+        if self.exchange_name == "Binance":
             return {"positionSide": side.value}
-        # Gate.io Dual Mode(및 대부분의 reduceOnly 기반 거래소): 매수/매도 방향이 곧 롱/숏 슬롯을
-        # 가리키므로 positionSide가 없고, 청산 주문에만 reduceOnly를 붙여야 반대 포지션이 새로 열리지 않는다.
-        return {} if is_entry else {"reduceOnly": True}
+        if self.exchange_name == "Gate.io":
+            return {} if is_entry else {"reduceOnly": True}
+        params = {"hedged": True}
+        if not is_entry:
+            params["reduceOnly"] = True
+        return params
 
     def fill_order(self, side: Side, is_entry: bool, qty: float, price: float) -> None:
         # Gate.io 등 계약(contract) 기반 거래소는 주문 amount가 BTC가 아니라 '계약 수'이며,
@@ -809,9 +939,10 @@ def main() -> None:
     if args.live:
         api_key = os.environ.get("EXCHANGE_API_KEY", "")
         api_secret = os.environ.get("EXCHANGE_API_SECRET", "")
+        passphrase = os.environ.get("EXCHANGE_PASSPHRASE", "")
         if not api_key or not api_secret:
             raise SystemExit("실거래 모드는 EXCHANGE_API_KEY / EXCHANGE_API_SECRET 환경변수가 필요합니다.")
-        broker = LiveBroker(EXCHANGE_ID, api_key, api_secret)
+        broker = LiveBroker(EXCHANGE_NAME, api_key, api_secret, passphrase)
         mode_label = "LIVE"
     else:
         broker = PaperBroker()
@@ -819,7 +950,7 @@ def main() -> None:
 
     bot = HedgedMartingaleBot(broker, notifier, mode_label, state_path=STATE_PATH)
     market_data = PublicMarketData()
-    logger.info("거래소: %s / 심볼: %s / 상태 저장 위치: %s", EXCHANGE_ID, SYMBOL, STATE_PATH)
+    logger.info("거래소: %s / 심볼: %s / 상태 저장 위치: %s", EXCHANGE_NAME, SYMBOL, STATE_PATH)
     bot.run_forever(market_data, poll_sec=args.poll_sec)
 
 
