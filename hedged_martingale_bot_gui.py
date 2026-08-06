@@ -48,6 +48,7 @@ class HedgedMartingaleGUI:
         self._status_after_id: str | None = None
         self.bot = None                 # 실행 중인 봇(상태줄에 포지션을 표시하기 위해 보관)
         self.exchange_label = ""
+        self._window_fitted = False     # 창 크기를 한 번이라도 맞췄는지(구성 도중 재조정 방지)
 
         self._build_widgets()
         self._fit_window_to_content()
@@ -60,12 +61,18 @@ class HedgedMartingaleGUI:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _fit_window_to_content(self) -> None:
-        """창을 내용에 딱 맞는 크기로 맞춘다. 세로로 늘리면 로그창만 커지고, 그보다 작게는 못 줄인다."""
+        """창을 내용에 딱 맞는 크기로 맞춘다. 세로로 늘리면 로그창만 커지고, 그보다 작게는 못 줄인다.
+
+        거래소를 바꿔 Passphrase 칸이 나타나거나 사라지면 필요한 높이가 달라지므로,
+        이전에 걸어둔 최소 크기를 먼저 풀고 다시 측정해야 창이 작아지는 방향으로도 맞춰진다.
+        """
+        self.root.minsize(1, 1)
         self.root.update_idletasks()
         width = self.root.winfo_reqwidth()
         height = self.root.winfo_reqheight()
         self.root.geometry(f"{width}x{height}")
         self.root.minsize(width, height)
+        self._window_fitted = True
 
     # ───────────── UI 구성 ─────────────
     def _build_widgets(self) -> None:
@@ -238,6 +245,9 @@ class HedgedMartingaleGUI:
             self.label_passphrase.grid_remove()
             self.entry_passphrase.grid_remove()
             self.label_passphrase_note.grid_remove()
+        # 칸이 늘거나 줄어든 만큼 창 크기도 다시 맞춘다(최초 구성 중에는 아직 창이 없으므로 건너뜀).
+        if self._window_fitted:
+            self._fit_window_to_content()
 
     def _show_api_guide(self) -> None:
         name = self.exchange_var.get()
