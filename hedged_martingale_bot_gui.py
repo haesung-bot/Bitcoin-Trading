@@ -1,12 +1,13 @@
 """
 hedged_martingale_bot_gui.py
-비트코인 10배 레버리지 양방향 마틴게일 자동매매 - Gate.io 실거래 GUI
+비트코인 양방향(Hedge Mode) 마틴게일 자동매매 - Gate.io 실거래 GUI
 
 hedged_martingale_bot.py의 전략 엔진을 그대로 사용한다. API 키를 입력하고
-'매매 시작' 버튼을 누르면 실제 Gate.io 계좌로 주문이 나가는 실거래가 시작된다
-(모의매매 아님). 전략 파라미터(레버리지, 마진 비율, 진입/청산 조건 등)는 화면에
-표시만 되고 수정할 수 없다 — 값을 바꾸려면 hedged_martingale_bot.py 상단의
-설정값을 직접 수정해야 한다.
+'자동매매 시작' 버튼을 누르면 실제 Gate.io 계좌로 주문이 나가는 실거래가 시작된다
+(모의매매 아님). 레버리지/포지션 크기/익절/물타기 간격/손절은 화면에서 직접 설정한다.
+
+화면 구성은 gateio_supertrend_bot.py와 동일한 스타일(스크롤 컨테이너 + LabelFrame
+섹션 + 어두운 로그창)을 따른다.
 
 exe로 빌드하는 방법은 hedged_martingale_bot_exe_빌드_방법.md 참고.
 """
@@ -19,7 +20,7 @@ import os
 import queue
 import threading
 import tkinter as tk
-from tkinter import messagebox, scrolledtext
+from tkinter import messagebox
 
 import hedged_martingale_bot as core
 
@@ -39,108 +40,177 @@ class HedgedMartingaleGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("비트코인 양방향 마틴게일 자동매매 (Gate.io 실거래)")
-        self.root.geometry("680x580")
-        self.root.minsize(600, 480)
+        self.root.geometry("720x880")
+        self.root.minsize(680, 580)
+        self.root.resizable(True, True)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self._save_after_id: str | None = None
 
+        self._create_scrollable_container()
         self._build_widgets()
         self._load_saved_credentials()
         self._install_log_handler()
         self._poll_log_queue()
-        self._log(f"프로그램 버전: {core.VERSION}")
-        self._log("프로그램이 시작되었습니다. API Key/Secret 입력 후 '매매 시작'을 누르세요.")
+        self._log(f"ℹ️ 프로그램 버전: {core.VERSION}")
+        self._log("ℹ️ 프로그램이 시작되었습니다. API Key 입력 후 '자동매매 시작' 버튼을 눌러주세요.")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _create_scrollable_container(self) -> None:
+        """창을 줄여도 스크롤(휠/스크롤바)로 전체 내용을 볼 수 있도록 캔버스로 감싼다."""
+        container = tk.Frame(self.root)
+        container.pack(fill="both", expand=True)
+
+        self.main_canvas = tk.Canvas(container, highlightthickness=0)
+        main_scrollbar = tk.Scrollbar(container, orient="vertical", command=self.main_canvas.yview)
+        self.scrollable_frame = tk.Frame(self.main_canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.main_canvas.configure(scrollregion=self.main_canvas.bbox("all")),
+        )
+        self.canvas_window = self.main_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.main_canvas.configure(yscrollcommand=main_scrollbar.set)
+
+        # 캔버스 폭이 바뀌면 내부 프레임 폭도 같이 맞춰서, 가로로는 안 잘리고 내용이 꽉 차게 한다
+        self.main_canvas.bind(
+            "<Configure>",
+            lambda e: self.main_canvas.itemconfig(self.canvas_window, width=e.width),
+        )
+        self.main_canvas.pack(side="left", fill="both", expand=True)
+        main_scrollbar.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            self.main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        self.main_canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
     # ───────────── UI 구성 ─────────────
     def _build_widgets(self) -> None:
-        info = (
-            f"거래소: Gate.io 선물({core.SYMBOL}) (양방향 Hedge Mode)\n"
-            "레버리지: 매매 시작 시 거래소 계좌에 설정됨 (Gate.io 기준 1~100)\n"
-            "포지션 크기 %: 잔고 대비 진입 마진 비율(예: 2 → 레버리지 10x면 명목가치는 잔고의 20%)\n"
-            "익절 %: 평단가 대비 이만큼 유리하게 움직이면 전량 익절\n"
-            "물타기 간격 %: 평단가 대비 이만큼 불리하게 갈 때마다 1→2→4→8배 추가 진입(최대 4단계)\n"
-            "손절 %: 평단가 대비 이만큼 불리해지면 단계와 무관하게 전량 손절 (물타기 간격보다 크게 설정)"
-        )
-        tk.Label(self.root, text=info, justify="left", fg="#333").pack(anchor="w", padx=12, pady=(10, 6))
+        parent = self.scrollable_frame
 
-        form = tk.Frame(self.root)
-        form.pack(fill="x", padx=12)
+        # 1. 거래소 / API 설정
+        api_frame = tk.LabelFrame(parent, text=" 거래소 / API 설정 ", padx=10, pady=10)
+        api_frame.pack(fill="x", padx=15, pady=5)
 
-        tk.Label(form, text="Gate.io API Key").grid(row=0, column=0, sticky="w", pady=3)
+        tk.Label(api_frame, text="거래소:").grid(row=0, column=0, sticky="w")
+        tk.Label(api_frame, text=f"Gate.io 선물 ({core.SYMBOL}) · 양방향 Hedge Mode",
+                 font=("맑은 고딕", 9, "bold")).grid(row=0, column=1, columnspan=2, sticky="w", pady=5)
+
+        tk.Label(api_frame, text="API Key:").grid(row=1, column=0, sticky="w")
         self.api_key_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.api_key_var, width=50).grid(row=0, column=1, columnspan=3, pady=3, sticky="we")
+        tk.Entry(api_frame, textvariable=self.api_key_var, width=55, show="*").grid(
+            row=1, column=1, columnspan=2, sticky="w", pady=5)
 
-        tk.Label(form, text="Gate.io API Secret").grid(row=1, column=0, sticky="w", pady=3)
+        tk.Label(api_frame, text="Secret Key:").grid(row=2, column=0, sticky="w")
         self.api_secret_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.api_secret_var, width=50, show="*").grid(row=1, column=1, columnspan=3, pady=3, sticky="we")
+        tk.Entry(api_frame, textvariable=self.api_secret_var, width=55, show="*").grid(
+            row=2, column=1, columnspan=2, sticky="w", pady=5)
 
-        tk.Label(form, text="텔레그램 봇 토큰(선택)").grid(row=2, column=0, sticky="w", pady=3)
+        tk.Label(api_frame, text="텔레그램 봇 토큰:").grid(row=3, column=0, sticky="w")
         self.tg_token_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.tg_token_var, width=50).grid(row=2, column=1, columnspan=3, pady=3, sticky="we")
+        tk.Entry(api_frame, textvariable=self.tg_token_var, width=55, show="*").grid(
+            row=3, column=1, columnspan=2, sticky="w", pady=5)
 
-        tk.Label(form, text="텔레그램 Chat ID(선택)").grid(row=3, column=0, sticky="w", pady=3)
+        tk.Label(api_frame, text="텔레그램 Chat ID:").grid(row=4, column=0, sticky="w")
         self.tg_chat_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.tg_chat_var, width=50).grid(row=3, column=1, columnspan=3, pady=3, sticky="we")
+        tk.Entry(api_frame, textvariable=self.tg_chat_var, width=55).grid(
+            row=4, column=1, columnspan=2, sticky="w", pady=5)
+        tk.Label(api_frame, text="※ 텔레그램 2칸은 선택사항입니다. 입력하면 진입/익절/손절 때마다 알림이 옵니다.",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=5, column=0, columnspan=3, sticky="w")
 
-        # ── 전략 설정 ──
-        tk.Label(form, text="레버리지 (배)").grid(row=4, column=0, sticky="w", pady=3)
+        del_row = tk.Frame(api_frame)
+        del_row.grid(row=6, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        tk.Label(del_row, text="입력한 값은 자동 저장되어 다음 실행 시 자동 입력됩니다.").pack(side="left")
+        tk.Button(del_row, text="저장된 키 삭제", command=self._clear_saved_credentials).pack(side="left", padx=(10, 0))
+        tk.Label(api_frame, text="⚠️ 이 PC에 평문으로 저장됩니다. 본인 개인 PC에서만 사용하세요.",
+                 fg="#c0392b", font=("맑은 고딕", 8)).grid(row=7, column=0, columnspan=3, sticky="w", pady=(2, 0))
+
+        # 2. 상세설정
+        config_frame = tk.LabelFrame(parent, text=" 상세설정 ", padx=10, pady=10)
+        config_frame.pack(fill="x", padx=15, pady=5)
+
+        tk.Label(config_frame, text="레버리지 (1~100배):").grid(row=0, column=0, sticky="w")
         self.leverage_var = tk.StringVar(value=f"{core.LEVERAGE:g}")
-        tk.Entry(form, textvariable=self.leverage_var, width=10).grid(row=4, column=1, pady=3, sticky="w")
+        tk.Spinbox(config_frame, from_=1, to=100, increment=1, width=15,
+                   textvariable=self.leverage_var).grid(row=0, column=1, sticky="w", pady=5)
+        tk.Label(config_frame, text="(매매 시작 시 거래소 계좌에 설정됩니다)",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=0, column=2, sticky="w", padx=(8, 0))
 
-        tk.Label(form, text="포지션 크기 %").grid(row=4, column=2, sticky="e", padx=(10, 4), pady=3)
+        tk.Label(config_frame, text="포지션 크기 (%):").grid(row=1, column=0, sticky="w")
         self.pos_pct_var = tk.StringVar(value=f"{core.INITIAL_MARGIN_PCT * 100:g}")
-        tk.Entry(form, textvariable=self.pos_pct_var, width=10).grid(row=4, column=3, pady=3, sticky="w")
+        tk.Entry(config_frame, textvariable=self.pos_pct_var, width=18).grid(row=1, column=1, sticky="w", pady=5)
+        tk.Label(config_frame, text="(잔고 대비 1차 진입 마진. 예: 잔고 100 × 레버리지 10배 × 1% ≈ 10 USDT 진입)",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=1, column=2, sticky="w", padx=(8, 0))
 
-        tk.Label(form, text="익절 %").grid(row=5, column=0, sticky="w", pady=3)
+        tk.Label(config_frame, text="익절 (%):").grid(row=2, column=0, sticky="w")
         self.tp_pct_var = tk.StringVar(value=f"{core.TP_PCT * 100:g}")
-        tk.Entry(form, textvariable=self.tp_pct_var, width=10).grid(row=5, column=1, pady=3, sticky="w")
+        tk.Entry(config_frame, textvariable=self.tp_pct_var, width=18).grid(row=2, column=1, sticky="w", pady=5)
+        tk.Label(config_frame, text="(평단가 대비 이만큼 유리하게 움직이면 전량 익절)",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=2, column=2, sticky="w", padx=(8, 0))
 
-        tk.Label(form, text="물타기 간격 %").grid(row=5, column=2, sticky="e", padx=(10, 4), pady=3)
+        tk.Label(config_frame, text="물타기 간격 (%):").grid(row=3, column=0, sticky="w")
         self.step_pct_var = tk.StringVar(value=f"{core.STEP_TRIGGER_PCT * 100:g}")
-        tk.Entry(form, textvariable=self.step_pct_var, width=10).grid(row=5, column=3, pady=3, sticky="w")
+        tk.Entry(config_frame, textvariable=self.step_pct_var, width=18).grid(row=3, column=1, sticky="w", pady=5)
+        tk.Label(config_frame, text=f"(이만큼 불리해질 때마다 1→2→4→8배 추가 진입, 최대 {core.MAX_STEPS}단계)",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=3, column=2, sticky="w", padx=(8, 0))
 
-        tk.Label(form, text="손절 %").grid(row=6, column=0, sticky="w", pady=3)
+        tk.Label(config_frame, text="손절 (%):").grid(row=4, column=0, sticky="w")
         self.sl_pct_var = tk.StringVar(value=f"{core.STOP_LOSS_PCT * 100:g}")
-        tk.Entry(form, textvariable=self.sl_pct_var, width=10).grid(row=6, column=1, pady=3, sticky="w")
+        tk.Entry(config_frame, textvariable=self.sl_pct_var, width=18).grid(row=4, column=1, sticky="w", pady=5)
+        tk.Label(config_frame, text="(평단가 대비 이만큼 불리해지면 단계와 무관하게 전량 손절)",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=4, column=2, sticky="w", padx=(8, 0))
 
-        form.columnconfigure(1, weight=1)
-        form.columnconfigure(3, weight=1)
+        tk.Label(config_frame,
+                 text="※ 손절 %는 물타기 간격 %보다 크게 설정해야 합니다. 롱/숏은 서로 독립적으로 동시에 운용됩니다.",
+                 fg="#7f8c8d", font=("맑은 고딕", 8), justify="left", anchor="w").grid(
+            row=5, column=0, columnspan=3, sticky="w")
 
         # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
         for var in (self.api_key_var, self.api_secret_var, self.tg_token_var, self.tg_chat_var,
                     self.leverage_var, self.pos_pct_var, self.tp_pct_var, self.step_pct_var, self.sl_pct_var):
             var.trace_add("write", self._schedule_save)
 
-        btn_frame = tk.Frame(self.root)
-        btn_frame.pack(fill="x", padx=12, pady=10)
+        # 3. 제어 버튼
+        btn_frame = tk.Frame(parent, pady=10)
+        btn_frame.pack(fill="x", padx=15)
 
-        self.start_btn = tk.Button(
-            btn_frame, text="▶ 매매 시작 (실거래)", bg="#c0392b", fg="white",
-            font=("맑은 고딕", 11, "bold"), height=2, command=self._on_start_clicked,
-        )
-        self.start_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self.start_btn = tk.Button(btn_frame, text="▶ 자동매매 시작", bg="#2ecc71", fg="white",
+                                   font=("맑은 고딕", 12, "bold"), height=1, command=self._on_start_clicked)
+        self.start_btn.pack(side="left", fill="x", expand=True, padx=5)
 
-        self.stop_btn = tk.Button(
-            btn_frame, text="■ 정지", bg="#7f8c8d", fg="white",
-            font=("맑은 고딕", 11, "bold"), height=2, state="disabled", command=self._on_stop_clicked,
-        )
-        self.stop_btn.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        self.stop_btn = tk.Button(btn_frame, text="■ 정지", bg="#e74c3c", fg="white",
+                                  font=("맑은 고딕", 12, "bold"), height=1, state="disabled",
+                                  command=self._on_stop_clicked)
+        self.stop_btn.pack(side="right", fill="x", expand=True, padx=5)
 
-        self.reset_btn = tk.Button(
-            self.root, text="⟳ 저장된 매매상태 초기화 (정지 후 사용)", bg="#e0e0e0",
-            command=self._on_reset_clicked,
-        )
-        self.reset_btn.pack(fill="x", padx=12, pady=(0, 4))
+        reset_btn_frame = tk.Frame(parent)
+        reset_btn_frame.pack(fill="x", padx=15, pady=(0, 5))
+        self.reset_btn = tk.Button(reset_btn_frame, text="⟳ 저장된 매매상태 초기화 (정지 후 사용)",
+                                   bg="#34495e", fg="white", font=("맑은 고딕", 10, "bold"),
+                                   command=self._on_reset_clicked)
+        self.reset_btn.pack(fill="x")
+
+        # 4. 실시간 로그 창
+        log_frame = tk.LabelFrame(parent, text=" 실시간 매매 로그 및 상태 ", padx=10, pady=10)
+        log_frame.pack(fill="both", expand=True, padx=15, pady=5)
 
         self.status_var = tk.StringVar(value="상태: 대기 중")
-        tk.Label(self.root, textvariable=self.status_var, anchor="w", font=(None, 10, "bold")).pack(fill="x", padx=12)
+        tk.Label(log_frame, textvariable=self.status_var, anchor="w",
+                 font=("맑은 고딕", 10, "bold")).pack(fill="x", pady=(0, 5))
 
-        self.log_box = scrolledtext.ScrolledText(self.root, height=18, state="disabled", font=("Consolas", 9))
-        self.log_box.pack(fill="both", expand=True, padx=12, pady=(6, 12))
+        log_inner = tk.Frame(log_frame)
+        log_inner.pack(fill="both", expand=True)
+
+        log_scrollbar = tk.Scrollbar(log_inner)
+        log_scrollbar.pack(side="right", fill="y")
+
+        self.log_box = tk.Text(log_inner, height=15, width=70, state="disabled", bg="#1e1e1e", fg="#ffffff",
+                               yscrollcommand=log_scrollbar.set, wrap="word")
+        self.log_box.pack(side="left", fill="both", expand=True)
+        log_scrollbar.config(command=self.log_box.yview)
 
     # ───────────── 로그 ─────────────
     def _install_log_handler(self) -> None:
@@ -157,6 +227,10 @@ class HedgedMartingaleGUI:
     def _append_log(self, text: str) -> None:
         self.log_box.configure(state="normal")
         self.log_box.insert("end", text + "\n")
+        # 로그가 너무 쌓이면 UI가 느려지므로 500줄 초과 시 오래된 줄부터 제거
+        line_count = int(self.log_box.index("end-1c").split(".")[0])
+        if line_count > 500:
+            self.log_box.delete("1.0", f"{line_count - 500}.0")
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
 
@@ -212,6 +286,22 @@ class HedgedMartingaleGUI:
         if self._save_after_id is not None:
             self.root.after_cancel(self._save_after_id)
         self._save_after_id = self.root.after(500, self._save_credentials)
+
+    def _clear_saved_credentials(self) -> None:
+        """저장된 API 키/텔레그램 정보를 삭제한다(전략 설정값은 그대로 유지)."""
+        if not messagebox.askyesno(
+            "저장된 키 삭제",
+            "저장된 API Key / Secret Key / 텔레그램 정보를 삭제합니다.\n"
+            "레버리지 등 전략 설정값은 그대로 유지됩니다.\n\n계속할까요?",
+        ):
+            return
+        self.api_key_var.set("")
+        self.api_secret_var.set("")
+        self.tg_token_var.set("")
+        self.tg_chat_var.set("")
+        self._save_credentials()
+        self._log("저장된 API 키와 텔레그램 정보를 삭제했습니다.")
+        messagebox.showinfo("완료", "저장된 API 키를 삭제했습니다.")
 
     def _parse_pct(self, text: str, name: str) -> float:
         """'2', '0.3' 같은 퍼센트 입력을 소수(0.02, 0.003)로 변환. 잘못된 값이면 ValueError."""
