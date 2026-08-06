@@ -108,9 +108,13 @@ class HedgedMartingaleGUI:
         self.combo_exchange.grid(row=0, column=1, sticky="w", pady=5)
         self.combo_exchange.bind("<<ComboboxSelected>>", self._on_exchange_changed)
 
-        self.btn_api_guide = tk.Button(api_frame, text="📖 Gate.io API Key 발급방법", bg="#f39c12", fg="white",
+        guide_row = tk.Frame(api_frame)
+        guide_row.grid(row=0, column=2, sticky="w", padx=(10, 0), pady=5)
+        self.btn_api_guide = tk.Button(guide_row, text="📖 Gate.io API Key 발급방법", bg="#f39c12", fg="white",
                                        command=self._show_api_guide)
-        self.btn_api_guide.grid(row=0, column=2, sticky="w", padx=(10, 0), pady=5)
+        self.btn_api_guide.pack(side="left")
+        tk.Button(guide_row, text="⚠️ 주의사항", bg="#c0392b", fg="white",
+                  command=self._show_caution).pack(side="left", padx=(6, 0))
 
         tk.Label(api_frame, text="API Key:").grid(row=1, column=0, sticky="w")
         self.api_key_var = tk.StringVar()
@@ -153,14 +157,22 @@ class HedgedMartingaleGUI:
         self.leverage_var = tk.StringVar(value=f"{core.LEVERAGE:g}")
         tk.Spinbox(config_frame, from_=1, to=100, increment=1, width=15,
                    textvariable=self.leverage_var).grid(row=0, column=1, sticky="w", pady=5)
-        tk.Label(config_frame, text="(매매 시작 시 거래소 계좌에 설정됩니다)",
-                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=0, column=2, sticky="w", padx=(8, 0))
+        lev_hint = tk.Frame(config_frame)
+        lev_hint.grid(row=0, column=2, sticky="w", padx=(8, 0))
+        tk.Label(lev_hint, text="※ 10배 추천", fg="#c0392b",
+                 font=("맑은 고딕", 9, "bold")).pack(side="left")
+        tk.Label(lev_hint, text="(매매 시작 시 거래소 계좌에 설정됩니다)",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).pack(side="left", padx=(6, 0))
 
         tk.Label(config_frame, text="포지션 크기 (%):").grid(row=1, column=0, sticky="w")
         self.pos_pct_var = tk.StringVar(value=f"{core.INITIAL_MARGIN_PCT * 100:g}")
         tk.Entry(config_frame, textvariable=self.pos_pct_var, width=18).grid(row=1, column=1, sticky="w", pady=5)
-        tk.Label(config_frame, text="(잔고 대비 진입 비율. 예: 잔고 100 × 레버리지 10배 × 1% ≈ 10 USDT 진입)",
-                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=1, column=2, sticky="w", padx=(8, 0))
+        pos_hint = tk.Frame(config_frame)
+        pos_hint.grid(row=1, column=2, sticky="w", padx=(8, 0))
+        tk.Label(pos_hint, text="※ 2% 추천", fg="#c0392b",
+                 font=("맑은 고딕", 9, "bold")).pack(side="left")
+        tk.Label(pos_hint, text="(잔고 대비 진입 비율. 예: 잔고 100 × 레버리지 10배 × 2% ≈ 20 USDT 진입)",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).pack(side="left", padx=(6, 0))
 
         # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
         for var in (self.api_key_var, self.api_secret_var, self.passphrase_var,
@@ -271,6 +283,30 @@ class HedgedMartingaleGUI:
         txt.config(state="disabled")
 
         tk.Button(win, text="닫기", command=win.destroy, width=12).pack(pady=(0, 12))
+
+    def _show_caution(self) -> None:
+        win = tk.Toplevel(self.root)
+        win.title("⚠️ 주의사항")
+        win.geometry("680x680")
+
+        tk.Label(win, text="⚠️ 사용 전 주의사항", font=("맑은 고딕", 14, "bold"),
+                 fg="#c0392b").pack(pady=(12, 2))
+        tk.Label(win, text="레버리지 거래는 원금 전액을 잃을 수 있습니다. 끝까지 읽어주세요.",
+                 font=("맑은 고딕", 9), fg="#7f8c8d").pack(pady=(0, 8))
+
+        text_frame = tk.Frame(win)
+        text_frame.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        sb = tk.Scrollbar(text_frame)
+        sb.pack(side="right", fill="y")
+        txt = tk.Text(text_frame, wrap="word", yscrollcommand=sb.set, font=("맑은 고딕", 10),
+                      padx=8, pady=8)
+        txt.pack(side="left", fill="both", expand=True)
+        sb.config(command=txt.yview)
+        txt.insert("1.0", core.CAUTION_TEXT)
+        txt.config(state="disabled")
+
+        tk.Button(win, text="확인했습니다", command=win.destroy, width=16,
+                  bg="#c0392b", fg="white", font=("맑은 고딕", 10, "bold")).pack(pady=(0, 12))
 
     # ───────────── 자격증명 저장/불러오기 (거래소별) ─────────────
     def _read_config(self) -> dict:
