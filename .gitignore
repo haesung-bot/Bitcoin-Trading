@@ -1,0 +1,11 @@
+# 파이썬 바이트코드 — 실행할 때마다 새로 생기는 파일이라 저장소에 넣지 않는다.
+__pycache__/
+*.py[cod]
+
+# 테스트 도구 캐시
+.pytest_cache/
+.coverage
+
+# 가상환경
+.venv/
+venv/
