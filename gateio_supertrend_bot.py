@@ -132,6 +132,10 @@ class GateioProSuperTrendBot:
         self.exchange = None
         self.symbol = 'BTC/USDT:USDT'
 
+        # 헤르메스 제어 계층이 붙으면 여기에 RuntimeConfig가 주입된다.
+        # None이면 매매 루프는 기존과 똑같이 시작 시점 설정값을 그대로 사용한다.
+        self.runtime_config = None
+
         self.selected_tf = FIXED_TIMEFRAME
         self.trade_history = []
         self.load_trade_history()
@@ -895,6 +899,19 @@ class GateioProSuperTrendBot:
 
         while self.is_running:
             try:
+                # 헤르메스 제어 계층이 붙어 있으면 매 주기마다 최신 설정을 다시 읽는다.
+                # 덕분에 레버리지·주문 금액 같은 값을 봇을 껐다 켜지 않고 바꿀 수 있다.
+                # 제어 계층이 없으면 아래 값들은 시작 시점 값 그대로 유지된다.
+                entries_enabled = True
+                if self.runtime_config is not None:
+                    live = self.runtime_config.snapshot()
+                    amount_mode = live["amount_mode"]
+                    fixed_amount_usdt = live["fixed_amount_usdt"]
+                    balance_pct = live["balance_pct"]
+                    self._current_leverage = live["leverage"]
+                    poll_sec = max(3, int(live["poll_sec"]))
+                    entries_enabled = live["entries_enabled"]
+
                 ticker = self.exchange.fetch_ticker(self.symbol)
                 current_price = ticker['last']
 
@@ -1022,7 +1039,11 @@ class GateioProSuperTrendBot:
 
                 # ---- 3) 청산 후(또는 원래 포지션이 없었고) 현재 추세 방향으로 신규 진입 ----
                 #     단, "추세가 실제로 전환된 시점"에만 진입한다 (트레일링 청산만으로는 같은 방향 재진입하지 않음)
-                if trend_changed:
+                if trend_changed and not entries_enabled:
+                    self.log("⏸️ 신규 진입 차단 상태 — 이번 추세 전환 신호는 건너뜁니다. "
+                             "(보유 포지션의 트레일링 청산 관리는 계속됩니다)")
+
+                if trend_changed and entries_enabled:
                     position_now = self.get_current_position()
                     if position_now['side'] == 'none':
                         order_amount_usdt, fetched_balance = self.resolve_order_amount_usdt(
