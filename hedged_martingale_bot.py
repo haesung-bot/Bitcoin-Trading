@@ -782,9 +782,20 @@ class MartingaleModule:
         if not actual_qty or actual_qty <= 0 or not entry_price:
             self._reset()
             return False
-        contracts = max(1, round(actual_qty / contract_size)) if contract_size else 1
-        # 마틴게일 누적 계약수(1,3,7,15...)에 대응하도록 계약수의 비트길이로 단계를 추정
-        step = min(MAX_STEPS, max(1, contracts.bit_length()))
+        # 단계 추정: 누적 수량은 1단계 수량의 (2^step - 1)배이므로, 지금 기준 1단계 수량과의
+        # 비율로 역산한다. (예전에는 '1단계 = 1계약'을 전제해 계약수의 비트길이로 계산했는데,
+        # 실제 1단계가 수십 계약이면 항상 최대 단계로 오판되어 추가 진입이 멈추는 버그가 있었다.)
+        step = 1
+        try:
+            base_qty = self.qty_provider(entry_price)
+        except Exception as e:
+            logger.debug("단계 추정용 기준 수량 계산 실패: %s", e)
+            base_qty = 0.0
+        if base_qty > 0:
+            ratio = actual_qty / base_qty
+            if ratio > 0:
+                step = int(round(math.log2(ratio + 1)))
+        step = min(MAX_STEPS, max(1, step))
         base = actual_qty / (2 ** step - 1)
         # 같은 평단가로 base, 2base, 4base... 형태의 체결 내역을 재구성(합계 = actual_qty)
         self.fills = [Fill(entry_price, base * (2 ** i)) for i in range(step)]
@@ -977,7 +988,8 @@ class HedgedMartingaleBot:
         """거래소의 실제 포지션을 '진실'로 삼아 내부 상태를 맞춘다(B안: 자동 동기화).
 
         - 조회 실패(None): 저장된 상태를 그대로 사용
-        - 포지션 있음: 거래소의 수량/평단가로 내부 상태를 재구성
+        - 저장된 상태와 수량이 일치: 저장된 상태를 그대로 사용(진입 단계 정보가 정확하므로)
+        - 수량이 어긋남: 거래소의 수량/평단가로 내부 상태를 재구성
         - 포지션 없음: 내부 상태를 비움(거래소가 flat이므로)
         """
         for module in (self.long, self.short):
@@ -985,7 +997,19 @@ class HedgedMartingaleBot:
             if pos is None:
                 continue  # 조회 불가 → 저장된 상태 유지
             had = module.in_position
-            synced = module.sync_from_exchange(pos["qty"], pos.get("entry_price"), pos.get("contract_size") or 1)
+            actual_qty = pos["qty"]
+
+            # 저장된 상태와 거래소 수량이 사실상 같으면 저장된 상태를 신뢰한다.
+            # 저장된 상태에는 실제 진입 단계가 그대로 들어 있어, 수량만 보고 단계를 되짚는
+            # 것보다 정확하다(단계를 잘못 추정하면 추가 진입이 멈추거나 과하게 나갈 수 있다).
+            if had and actual_qty > 0 and abs(actual_qty - module.total_qty) <= max(module.total_qty * 0.02, 1e-9):
+                logger.debug(
+                    "%s 저장된 상태와 거래소 수량 일치 → 상태 유지 (수량=%.6f, step=%d)",
+                    module.side.value, module.total_qty, module.step,
+                )
+                continue
+
+            synced = module.sync_from_exchange(actual_qty, pos.get("entry_price"), pos.get("contract_size") or 1)
             if synced:
                 logger.debug(
                     "%s 동기화 (수량=%.6f, 평단=%.2f, step=%d)",
