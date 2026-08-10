@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 import argparse
 import json
@@ -977,6 +977,10 @@ class HedgedMartingaleBot:
         self.short = MartingaleModule(Side.SHORT, broker, notifier, qty_provider, mode_label, on_trade_closed)
         if self.state_path:
             self._load_state()
+        # 상태 파일이 없거나 읽기에 실패해도 거래소 실포지션은 반드시 확인해야 한다.
+        # (예전에는 _load_state 안에서만 동기화해서, 상태 파일이 유실되면 거래소에 포지션이
+        #  살아있는데도 봇이 '포지션 없음'으로 시작해 그 위에 새로 1단계를 또 진입했다.)
+        self._sync_with_exchange()
 
     def _load_state(self) -> None:
         if not os.path.exists(self.state_path):
@@ -995,7 +999,6 @@ class HedgedMartingaleBot:
                 self.long.step, self.long.avg_price, self.short.step, self.short.avg_price,
             )
             logger.info("이전 매매 상태를 불러왔습니다.")
-        self._sync_with_exchange()
 
     def _sync_with_exchange(self) -> None:
         """거래소의 실제 포지션을 '진실'로 삼아 내부 상태를 맞춘다(B안: 자동 동기화).
