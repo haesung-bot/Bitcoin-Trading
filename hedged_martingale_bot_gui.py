@@ -43,6 +43,9 @@ class HedgedMartingaleGUI:
         self.root.title("비트코인 선물 자동매매")
 
         self.log_queue: queue.Queue[str] = queue.Queue()
+        # 매매 스레드에서 화면을 직접 건드리면 Tkinter가 불안정해지므로(스레드 안전하지 않음),
+        # 화면 갱신 작업은 이 큐에 넣고 메인 스레드가 꺼내서 실행한다.
+        self.ui_queue: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self._save_after_id: str | None = None
@@ -211,7 +214,17 @@ class HedgedMartingaleGUI:
     def _poll_log_queue(self) -> None:
         while not self.log_queue.empty():
             self._append_log(self.log_queue.get_nowait())
+        # 매매 스레드가 요청한 화면 갱신을 메인 스레드에서 실행한다.
+        while not self.ui_queue.empty():
+            try:
+                self.ui_queue.get_nowait()()
+            except Exception as e:
+                core.logger.debug("화면 갱신 처리 실패: %s", e)
         self.root.after(200, self._poll_log_queue)
+
+    def _run_on_ui(self, fn) -> None:
+        """매매 스레드에서 화면 갱신이 필요할 때 사용(메인 스레드에서 실행되도록 큐에 넣는다)."""
+        self.ui_queue.put(fn)
 
     def _append_log(self, text: str) -> None:
         self.log_box.configure(state="normal")
@@ -509,19 +522,25 @@ class HedgedMartingaleGUI:
         except Exception as e:
             core.logger.debug("계좌 연결 실패: %s", e)
             self._log("[오류] 계좌 연결에 실패했습니다. API Key/Secret과 인터넷 연결을 확인해주세요.")
-            self.root.after(0, self._set_stopped_ui)
+            self._run_on_ui(self._set_stopped_ui)
             return
 
         self.bot = bot
         self.exchange_label = exchange_name
-        self.root.after(0, self._update_position_status)
+        self._run_on_ui(self._update_position_status)
         self._log(f"{exchange_name} 계좌에 연결되었습니다.")
 
-        bot.run_forever(market_data, poll_sec=core.POLL_SEC, stop_event=self.stop_event)
-
-        self.bot = None
-        self._log("자동매매가 정지되었습니다.")
-        self.root.after(0, self._set_stopped_ui)
+        try:
+            bot.run_forever(market_data, poll_sec=core.POLL_SEC, stop_event=self.stop_event)
+        except Exception as e:
+            # 예기치 못한 오류로 매매 스레드가 끝나더라도 화면이 '매매 중'에 멈춰 있으면
+            # 사용자가 다시 시작할 수 없으므로, 반드시 안내하고 버튼 상태를 되돌린다.
+            core.logger.debug("매매 루프 예외 종료: %s", e)
+            self._log("[오류] 자동매매가 예기치 않게 중단되었습니다. 거래소에 열린 포지션을 확인한 뒤 다시 시작해주세요.")
+        finally:
+            self.bot = None
+            self._log("자동매매가 정지되었습니다.")
+            self._run_on_ui(self._set_stopped_ui)
 
     def _update_position_status(self) -> None:
         """상태줄에 현재 보유 포지션을 계속 갱신해서 보여준다(사용자가 매매 상태만 확인 가능하도록)."""

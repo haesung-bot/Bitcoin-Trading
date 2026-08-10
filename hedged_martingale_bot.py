@@ -878,7 +878,12 @@ class MartingaleModule:
         self._notify_entry(price, qty)
 
     def _add_martingale(self, price: float) -> None:
-        qty = self.fills[-1].qty * 2
+        # 거래소가 실제로 체결할 수 있는 단위로 먼저 맞춘다. 재시작 동기화로 재구성된
+        # 체결 내역은 계약 단위에 딱 떨어지지 않을 수 있어, 이 보정을 하지 않으면
+        # 내부 보유수량이 거래소 실제 수량과 조금씩 어긋나 손익 계산이 틀어진다.
+        qty = self.broker.quantize_qty(self.fills[-1].qty * 2, price)
+        if qty <= 0:
+            return
         self.broker.fill_order(self.side, True, qty, price)
         self.fills.append(Fill(price, qty))
         self.step += 1
