@@ -46,6 +46,7 @@ class HedgedMartingaleGUI:
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self._save_after_id: str | None = None
+        self._pending_save_exchange: str | None = None
         self._status_after_id: str | None = None
         self.bot = None                 # 실행 중인 봇(상태줄에 포지션을 표시하기 위해 보관)
         self.exchange_label = ""
@@ -228,6 +229,7 @@ class HedgedMartingaleGUI:
     # ───────────── 거래소 선택 / API 발급 안내 ─────────────
     def _on_exchange_changed(self, _event=None) -> None:
         """거래소를 바꾸면 그 거래소용으로 저장된 키를 불러오고 Passphrase 칸을 갱신한다."""
+        self._flush_pending_save()   # 직전 거래소용으로 입력한 값을 먼저 저장(유실 방지)
         name = self.exchange_var.get()
         self.btn_api_guide.config(text=f"📖 {name} API Key 발급방법")
         self._update_passphrase_visibility()
@@ -354,10 +356,10 @@ class HedgedMartingaleGUI:
         if data.get("pos_pct"):
             self.pos_pct_var.set(str(data["pos_pct"]))
 
-    def _save_credentials(self) -> None:
+    def _save_credentials(self, exchange_name: str = None) -> None:
         try:
             data = self._read_config()
-            name = self.exchange_var.get()
+            name = exchange_name or self.exchange_var.get()
             exchanges = data.get("exchanges") or {}
             if self.save_keys_var.get():
                 exchanges[name] = {
@@ -380,10 +382,29 @@ class HedgedMartingaleGUI:
             self._log(f"설정 저장 실패: {e}")
 
     def _schedule_save(self, *_args) -> None:
-        """입력칸이 바뀔 때마다 호출되며, 타이핑이 잠시 멈춘 뒤(500ms) 한 번만 저장한다."""
+        """입력칸이 바뀔 때마다 호출되며, 타이핑이 잠시 멈춘 뒤(500ms) 한 번만 저장한다.
+
+        어느 거래소용 입력인지 함께 기억해둔다. 저장이 실행되기 전에 거래소를 바꾸면
+        예약이 취소되면서 방금 입력한 키가 사라지므로, 전환 직전에 _flush_pending_save로
+        먼저 반영해야 한다.
+        """
         if self._save_after_id is not None:
             self.root.after_cancel(self._save_after_id)
-        self._save_after_id = self.root.after(500, self._save_credentials)
+        self._pending_save_exchange = self.exchange_var.get()
+        self._save_after_id = self.root.after(500, self._flush_pending_save)
+
+    def _flush_pending_save(self) -> None:
+        """예약된 저장이 있으면 지금 즉시 반영한다(거래소 전환/종료 시 유실 방지)."""
+        if self._save_after_id is not None:
+            try:
+                self.root.after_cancel(self._save_after_id)
+            except Exception:
+                pass
+            self._save_after_id = None
+        target = self._pending_save_exchange
+        self._pending_save_exchange = None
+        if target:
+            self._save_credentials(target)
 
     def _clear_saved_credentials(self) -> None:
         """현재 선택된 거래소용으로 저장된 API 키를 삭제한다."""
@@ -623,6 +644,7 @@ class HedgedMartingaleGUI:
         self.status_var.set("상태: 대기 중")
 
     def _on_close(self) -> None:
+        self._flush_pending_save()
         self._save_credentials()
         self.stop_event.set()
         self.root.destroy()

@@ -706,6 +706,12 @@ def make_qty_provider(broker) -> Callable[[float], float]:
 
     def _provider(price: float) -> float:
         balance = broker.get_balance()
+        # 잔고를 못 읽었거나(네트워크/권한 오류) 0이면 진입 규모를 계산할 수 없다.
+        # 이때 0을 돌려주지 않으면 최소 주문 수량으로 보정되어, 잘못된 근거로 실거래가
+        # 시작되고 그 수량을 기준으로 물타기까지 이어지므로 반드시 진입을 막아야 한다.
+        if balance <= 0:
+            logger.warning("계좌 잔고를 확인할 수 없어 진입하지 않습니다. API 키 권한과 선물 지갑 잔고를 확인해주세요.")
+            return 0.0
         notional_usdt = balance * LEVERAGE * INITIAL_MARGIN_PCT  # 레버리지한 잔고의 2%
         qty_btc = notional_usdt / price
         logger.debug(
@@ -845,12 +851,12 @@ class MartingaleModule:
 
         # 익절: 평단가 대비 +TP_PCT
         if pnl_pct >= TP_PCT:
-            self._take_profit(price)
+            self._take_profit(price, now)
             return
 
         # 손절: 평단가 대비 -STOP_LOSS_PCT (물타기 단계와 무관하게 전량 청산)
         if pnl_pct <= -STOP_LOSS_PCT:
-            self._stop_loss(price)
+            self._stop_loss(price, now)
             return
 
         # 물타기: 아직 최대 단계가 아니고 평단가 대비 -STEP_TRIGGER_PCT 이상 빠졌을 때
@@ -863,6 +869,8 @@ class MartingaleModule:
 
     def _enter_initial(self, price: float) -> None:
         qty = self.qty_provider(price)
+        if qty <= 0:
+            return  # 진입 규모를 산출하지 못한 경우(잔고 미확인 등)에는 주문을 내지 않는다
         self.broker.fill_order(self.side, True, qty, price)
         self.fills = [Fill(price, qty)]
         self.step = 1
@@ -904,21 +912,21 @@ class MartingaleModule:
         except Exception as e:
             logger.warning("매매 기록 저장 실패: %s", e)
 
-    def _take_profit(self, price: float) -> None:
+    def _take_profit(self, price: float, now: Optional[float] = None) -> None:
         pnl = self._close_all(price)
         self._notify_close(price, "익절", pnl)
         self._record_trade(price, "익절", pnl)
         self._reset()
         self.consecutive_sl = 0
-        self.cooldown_until = time.time() + COOLDOWN_SEC
+        self.cooldown_until = (time.time() if now is None else now) + COOLDOWN_SEC
 
-    def _stop_loss(self, price: float) -> None:
+    def _stop_loss(self, price: float, now: Optional[float] = None) -> None:
         pnl = self._close_all(price)
         self._notify_close(price, "손절", pnl)
         self._record_trade(price, "손절", pnl)
         self._reset()
         self.consecutive_sl += 1
-        self.cooldown_until = time.time() + COOLDOWN_SEC
+        self.cooldown_until = (time.time() if now is None else now) + COOLDOWN_SEC
         if self.consecutive_sl >= MAX_CONSECUTIVE_SL:
             self.halted = True
             self._notify_halt()
