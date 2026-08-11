@@ -142,9 +142,13 @@ class PersonalTradingGUI:
         tg_row = tk.Frame(api_frame)
         tg_row.grid(row=6, column=1, columnspan=2, sticky="w", pady=5)
         tk.Entry(tg_row, textvariable=self.tg_chat_var, width=30).pack(side="left")
-        tk.Button(tg_row, text="✈ 텔레그램 연결 테스트", bg="#2980b9", fg="white",
-                  command=self._test_telegram).pack(side="left", padx=(8, 0))
-        tk.Label(api_frame, text="※ 두 칸을 채우면 진입/청산/자동정지 때마다 텔레그램으로 알림이 옵니다(선택).",
+        tk.Button(tg_row, text="🔍 대화방 ID 찾기", bg="#8e44ad", fg="white",
+                  command=self._discover_chats).pack(side="left", padx=(8, 0))
+        tk.Button(tg_row, text="✈ 연결 테스트", bg="#2980b9", fg="white",
+                  command=self._test_telegram).pack(side="left", padx=(6, 0))
+        tk.Label(api_frame,
+                 text="※ 여러 곳에 동시 전송하려면 쉼표로 구분해서 넣으세요 (예: 66721231, -1001234567890)."
+                      "  그룹방 ID는 -100으로 시작합니다.",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=7, column=0, columnspan=3, sticky="w")
 
         self.save_keys_var = tk.BooleanVar(value=True)
@@ -511,34 +515,107 @@ class PersonalTradingGUI:
             h.setLevel(level)
         self._log(f"상세 로그 {'켜짐' if self.verbose_var.get() else '꺼짐'}")
 
-    def _test_telegram(self) -> None:
-        """입력한 토큰/Chat ID로 실제 메시지를 보내 연결을 확인한다."""
+    def _discover_chats(self) -> None:
+        """봇이 최근에 본 대화방(개인/그룹)의 Chat ID를 찾아서 보여준다.
+
+        그룹방 ID는 눈으로 확인할 방법이 마땅치 않아서, getUpdates에 잡힌 대화방을
+        긁어 목록으로 보여주고 바로 입력칸에 넣을 수 있게 한다.
+        """
         token = self.tg_token_var.get().strip()
-        chat = self.tg_chat_var.get().strip()
-        if not token or not chat:
-            messagebox.showerror("입력 오류", "텔레그램 봇 토큰과 Chat ID를 모두 입력하세요.")
+        if not token:
+            messagebox.showerror("입력 오류", "먼저 텔레그램 봇 토큰을 입력하세요.")
             return
         try:
-            resp = requests.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                data={"chat_id": chat, "text": "[개인용 봇] 텔레그램 연결 테스트입니다. 이 메시지가 보이면 정상입니다."},
-                timeout=10,
-            )
+            resp = requests.get(f"https://api.telegram.org/bot{token}/getUpdates",
+                                params={"limit": 100}, timeout=10)
             body = resp.json()
         except Exception as e:
-            self._log(f"텔레그램 전송 오류: {e}")
-            messagebox.showerror("전송 실패", f"텔레그램 서버에 연결하지 못했습니다.\n\n{e}")
+            self._log(f"대화방 조회 오류: {e}")
+            messagebox.showerror("조회 실패", f"텔레그램 서버에 연결하지 못했습니다.\n\n{e}")
             return
-        if body.get("ok"):
-            self._log("텔레그램 연결 테스트 성공")
-            messagebox.showinfo("성공", "텔레그램으로 테스트 메시지를 보냈습니다.\n앱에서 확인해보세요.")
-        else:
+        if not body.get("ok"):
             desc = body.get("description")
-            self._log(f"텔레그램 연결 실패: {desc}")
+            self._log(f"대화방 조회 실패: {desc}")
+            messagebox.showerror("조회 실패", f"텔레그램이 거부했습니다.\n\n{desc}\n\n봇 토큰이 맞는지 확인하세요.")
+            return
+
+        found = {}
+        for upd in body.get("result", []):
+            for key in ("message", "channel_post", "edited_message", "my_chat_member"):
+                chat = (upd.get(key) or {}).get("chat")
+                if not chat:
+                    continue
+                title = chat.get("title") or " ".join(
+                    x for x in (chat.get("first_name"), chat.get("last_name")) if x
+                ) or chat.get("username") or "(이름 없음)"
+                kind = {"private": "개인 DM", "group": "그룹", "supergroup": "그룹",
+                        "channel": "채널"}.get(chat.get("type"), chat.get("type"))
+                found[str(chat.get("id"))] = f"{kind} · {title}"
+
+        if not found:
+            messagebox.showinfo(
+                "찾은 대화방 없음",
+                "봇이 최근에 받은 메시지가 없습니다.\n\n"
+                "1) 봇을 그룹방에 초대하세요.\n"
+                "2) 그룹방에서 아무 메시지나 한 번 보내세요 (또는 /start).\n"
+                "3) 다시 이 버튼을 누르세요.\n\n"
+                "※ 그룹에서 봇이 메시지를 못 보는 경우: @BotFather → /setprivacy → Disable\n"
+                "※ 봇을 그룹 관리자로 올리면 확실합니다.",
+            )
+            return
+
+        lines = "\n".join(f"  {cid}    {name}" for cid, name in found.items())
+        self._log(f"대화방 {len(found)}곳 발견")
+        for cid, name in found.items():
+            self._log(f"   {cid}  {name}")
+        if messagebox.askyesno(
+            "찾은 대화방",
+            f"{lines}\n\n이 ID들을 모두 입력칸에 넣을까요?\n"
+            "(아니오를 누르면 로그에만 남습니다. 원하는 것만 직접 골라 넣으세요.)",
+        ):
+            self.tg_chat_var.set(", ".join(found.keys()))
+            self._schedule_save()
+
+    def _test_telegram(self) -> None:
+        """입력한 토큰/Chat ID(들)로 실제 메시지를 보내 연결을 확인한다."""
+        token = self.tg_token_var.get().strip()
+        chats = core.parse_chat_ids(self.tg_chat_var.get())
+        if not token or not chats:
+            messagebox.showerror("입력 오류", "텔레그램 봇 토큰과 Chat ID를 모두 입력하세요.")
+            return
+        ok_list, fail_list = [], []
+        for chat in chats:
+            try:
+                resp = requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    data={"chat_id": chat,
+                          "text": "[개인용 봇] 텔레그램 연결 테스트입니다. 이 메시지가 보이면 정상입니다."},
+                    timeout=10,
+                )
+                body = resp.json()
+            except Exception as e:
+                fail_list.append((chat, f"연결 오류: {e}"))
+                continue
+            if body.get("ok"):
+                ok_list.append(chat)
+            else:
+                fail_list.append((chat, body.get("description") or "알 수 없는 오류"))
+
+        for chat in ok_list:
+            self._log(f"텔레그램 전송 성공: {chat}")
+        for chat, why in fail_list:
+            self._log(f"텔레그램 전송 실패: {chat} — {why}")
+
+        if not fail_list:
+            messagebox.showinfo("성공", f"{len(ok_list)}곳으로 테스트 메시지를 보냈습니다.\n앱에서 확인해보세요.")
+        else:
+            detail = "\n".join(f"  · {c} → {w}" for c, w in fail_list)
             messagebox.showerror(
-                "전송 실패",
-                f"텔레그램이 거부했습니다.\n\n{desc}\n\n"
-                "· Chat ID가 맞는지\n· 그 봇에게 먼저 /start 를 보냈는지 확인하세요.",
+                "일부 전송 실패",
+                (f"성공 {len(ok_list)}곳 / 실패 {len(fail_list)}곳\n\n{detail}\n\n"
+                 "· 개인 DM이면 그 봇에게 먼저 /start 를 보냈는지\n"
+                 "· 그룹방이면 봇을 그룹에 초대했는지, ID가 -100으로 시작하는지\n"
+                 "  확인하세요."),
             )
 
     def _on_reset_state(self) -> None:

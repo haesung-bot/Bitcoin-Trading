@@ -38,6 +38,7 @@ import logging
 import math
 import os
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -446,27 +447,56 @@ class Indicators:
 
 
 # ───────────── 텔레그램 알림 ─────────────
+def parse_chat_ids(raw: str) -> List[str]:
+    """Chat ID 입력값을 여러 개로 쪼갠다.
+
+    쉼표/공백/세미콜론/줄바꿈 아무거나로 구분해서 여러 곳(개인 DM + 그룹방 등)에
+    동시에 보낼 수 있게 한다. 그룹방 ID는 보통 음수(-100...)이고, 공개 채널은
+    @채널이름 형태도 텔레그램이 받아준다.
+    """
+    if not raw:
+        return []
+    out = []
+    for token in re.split(r"[,\s;]+", str(raw).strip()):
+        token = token.strip()
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
 class TelegramNotifier:
     def __init__(self, token: str = TELEGRAM_BOT_TOKEN, chat_id: str = TELEGRAM_CHAT_ID):
         self.token = token
         self.chat_id = chat_id
+        self.chat_ids = parse_chat_ids(chat_id)
+        # 같은 대상에 대해 같은 실패 사유를 매 체결마다 반복 경고하지 않도록 기억해둔다.
+        self._warned: set = set()
 
     def send(self, text: str) -> None:
         logger.info("%s", text)
-        if not self.token or not self.chat_id:
+        if not self.token or not self.chat_ids:
             return  # 텔레그램 미설정 시 위 로그(화면/파일)로만 알린다
-        try:
-            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-            resp = requests.post(url, data={"chat_id": self.chat_id, "text": text}, timeout=10)
-            body = resp.json()
-            if not body.get("ok"):
-                # 텔레그램이 왜 거부했는지(예: chat not found, 봇에게 먼저 /start 안 함)를 그대로 보여준다.
-                logger.warning(
-                    "텔레그램 전송 실패 (code=%s): %s | Chat ID나 토큰이 맞는지, 봇에게 먼저 /start를 보냈는지 확인하세요.",
-                    body.get("error_code"), body.get("description"),
-                )
-        except Exception as e:
-            logger.warning("텔레그램 전송 오류(네트워크/방화벽 확인): %s", e)
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        for chat_id in self.chat_ids:
+            # 한 대상이 실패해도 나머지 대상에는 계속 보낸다(그룹방 하나가 막혀도 DM은 와야 함).
+            try:
+                resp = requests.post(url, data={"chat_id": chat_id, "text": text}, timeout=10)
+                body = resp.json()
+                if not body.get("ok"):
+                    # 텔레그램이 왜 거부했는지(예: chat not found, 봇이 그룹에 없음)를 그대로 보여준다.
+                    key = (chat_id, body.get("description"))
+                    if key not in self._warned:
+                        self._warned.add(key)
+                        logger.warning(
+                            "텔레그램 전송 실패 [%s] (code=%s): %s | 그룹방이면 봇을 그룹에 초대했는지, "
+                            "Chat ID가 -100으로 시작하는 값인지 확인하세요.",
+                            chat_id, body.get("error_code"), body.get("description"),
+                        )
+            except Exception as e:
+                key = (chat_id, str(e))
+                if key not in self._warned:
+                    self._warned.add(key)
+                    logger.warning("텔레그램 전송 오류 [%s] (네트워크/방화벽 확인): %s", chat_id, e)
 
 
 # ───────────── 시세 데이터 (공개 API, 인증 불필요) ─────────────
