@@ -51,6 +51,7 @@ class HedgedMartingaleGUI:
         self._save_after_id: str | None = None
         self._pending_save_exchange: str | None = None
         self._status_after_id: str | None = None
+        self._last_line_is_heartbeat = False
         self.bot = None                 # 실행 중인 봇(상태줄에 포지션을 표시하기 위해 보관)
         self.exchange_label = ""
         self._window_fitted = False     # 창 크기를 한 번이라도 맞췄는지(구성 도중 재조정 방지)
@@ -228,7 +229,13 @@ class HedgedMartingaleGUI:
 
     def _append_log(self, text: str) -> None:
         self.log_box.configure(state="normal")
+        # 시세/상태 표시줄(하트비트)은 매번 새로 쌓지 않고 직전 줄을 갈아끼운다.
+        # 30초마다 한 줄씩 쌓이면 정작 중요한 진입/청산 기록이 위로 밀려나기 때문이다.
+        is_beat = core.HEARTBEAT_MARK in text
+        if is_beat and self._last_line_is_heartbeat:
+            self.log_box.delete("end-2l", "end-1l")
         self.log_box.insert("end", text + "\n")
+        self._last_line_is_heartbeat = is_beat
         # 로그가 너무 쌓이면 UI가 느려지므로 500줄 초과 시 오래된 줄부터 제거
         line_count = int(self.log_box.index("end-1c").split(".")[0])
         if line_count > 500:

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 
 import argparse
 import json
@@ -454,6 +454,11 @@ SHOW_QTY_DETAIL = True
 # 텔레그램으로 나가는 알림에 잔고를 넣을지. False면 화면 로그에는 잔고가 계속 보이고
 # 텔레그램(그룹방 포함)으로 나가는 메시지에서만 잔고가 빠진다.
 TELEGRAM_SHOW_BALANCE = True
+
+# 진입까지 몇 분씩 아무 로그도 안 뜨면 프로그램이 살아있는지 알 수 없다. 그래서 조회할
+# 때마다 현재 시세와 포지션 상태를 한 줄로 남긴다. 이 표시가 붙은 줄은 화면에서 계속
+# 쌓이지 않고 직전 줄을 갈아끼우므로, 매매 기록이 밀려나지 않는다.
+HEARTBEAT_MARK = "⏱"
 
 
 def martingale_ladder(side, fills, max_steps: int = None) -> List[dict]:
@@ -1176,12 +1181,32 @@ class HedgedMartingaleBot:
             except Exception:
                 pass
 
+    def _side_status(self, module, price: float) -> str:
+        """하트비트에 넣을 방향별 한 줄 상태."""
+        if not module.in_position:
+            return "대기"
+        pnl_pct = module._pnl_pct(price) * 100
+        if SHOW_QTY_DETAIL:
+            # 배포용: 진입 차수를 드러내지 않는다.
+            return f"보유 · 평단 {module.avg_price:,.2f} · {pnl_pct:+.2f}%"
+        return f"{module.step}차 · 평단 {module.avg_price:,.2f} · {pnl_pct:+.2f}%"
+
+    def _log_heartbeat(self, price: float) -> None:
+        logger.info(
+            "%s 시세 %s | 롱 %s | 숏 %s",
+            HEARTBEAT_MARK, f"{price:,.2f}",
+            self._side_status(self.long, price), self._side_status(self.short, price),
+        )
+
     def on_price(self, price: float, closes_window: List[float], now: Optional[float] = None) -> None:
         rsi = Indicators.rsi(closes_window)
         bb = Indicators.bollinger(closes_window)
         self.long.on_tick(price, rsi, bb, now)
         self.short.on_tick(price, rsi, bb, now)
         self._save_state()
+        # 매매 판단이 끝난 뒤의 상태를 보여준다(진입/청산이 있었다면 그게 반영된 상태).
+        if price is not None and price > 0:
+            self._log_heartbeat(price)
 
     def run_forever(self, market_data: PublicMarketData, poll_sec: int = POLL_SEC, stop_event: Optional[threading.Event] = None) -> None:
         logger.debug("버전 %s / %s / 레버리지 %sx / %s", VERSION, self.long.mode_label, LEVERAGE, TIMEFRAME)
