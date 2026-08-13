@@ -39,6 +39,9 @@ core.TRADE_LOG_PATH = os.path.join(os.path.expanduser("~"), ".martingale_bot_min
 # 개인용은 BTC 수량/계약수 대신 USDT 금액과 진입 차수를 그대로 보여준다.
 core.SHOW_QTY_DETAIL = False
 
+# 창 높이를 내용 전체 높이의 몇 배로 열지(나머지는 스크롤로 본다).
+WINDOW_HEIGHT_RATIO = 0.7
+
 
 class QueueLogHandler(logging.Handler):
     def __init__(self, log_queue: queue.Queue[str]):
@@ -79,22 +82,72 @@ class PersonalTradingGUI:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _fit_window_to_content(self) -> None:
-        """창을 내용에 딱 맞는 크기로 맞춘다. 세로로 늘리면 로그창만 커지고, 그보다 작게는 못 줄인다.
+        """창 높이를 내용 전체 높이의 WINDOW_HEIGHT_RATIO만큼으로 잡는다(나머지는 스크롤).
 
-        거래소를 바꿔 Passphrase 칸이 나타나거나 사라지면 필요한 높이가 달라지므로,
-        이전에 걸어둔 최소 크기를 먼저 풀고 다시 측정해야 창이 작아지는 방향으로도 맞춰진다.
+        가로는 내용에 딱 맞추고, 세로만 줄여서 화면을 덜 차지하게 한다. 잘린 부분은
+        바깥 스크롤바나 마우스 휠로 내려서 본다. 거래소를 바꿔 Passphrase 칸이
+        나타나거나 사라지면 필요한 높이가 달라지므로, 이전에 걸어둔 최소 크기를 먼저
+        풀고 다시 측정해야 창이 작아지는 방향으로도 맞춰진다.
         """
         self.root.minsize(1, 1)
         self.root.update_idletasks()
-        width = self.root.winfo_reqwidth()
-        height = self.root.winfo_reqheight()
+        content_w = self.content.winfo_reqwidth()
+        content_h = self.content.winfo_reqheight()
+        self.canvas.configure(width=content_w)
+        self._sync_scrollregion()
+        width = content_w + self.vscroll.winfo_reqwidth() + 2
+        height = int(content_h * WINDOW_HEIGHT_RATIO)
         self.root.geometry(f"{width}x{height}")
-        self.root.minsize(width, height)
+        # 가로는 고정, 세로는 사용자가 원하면 더 늘릴 수 있게 최소값만 걸어둔다.
+        self.root.minsize(width, min(height, 400))
         self._window_fitted = True
+
+    # ───────────── 스크롤 가능한 바깥 틀 ─────────────
+    def _build_scroll_shell(self) -> tk.Frame:
+        """창 전체를 세로 스크롤할 수 있게 감싸고, 실제 내용이 들어갈 프레임을 돌려준다."""
+        shell = tk.Frame(self.root)
+        shell.pack(fill="both", expand=True)
+
+        self.canvas = tk.Canvas(shell, highlightthickness=0)
+        self.vscroll = tk.Scrollbar(shell, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vscroll.set)
+        self.vscroll.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        self.content = tk.Frame(self.canvas)
+        self._content_id = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+
+        self.content.bind("<Configure>", lambda e: self._sync_scrollregion())
+        # 캔버스가 넓어지면 내용도 같이 넓혀야 fill="x" 섹션들이 제대로 늘어난다.
+        self.canvas.bind("<Configure>",
+                         lambda e: self.canvas.itemconfigure(self._content_id, width=e.width))
+
+        # 마우스 휠: 창 어디에서 굴려도 전체가 스크롤되게 한다(로그창 위는 제외).
+        self.root.bind_all("<MouseWheel>", self._on_mousewheel)      # Windows / macOS
+        self.root.bind_all("<Button-4>", self._on_mousewheel)        # Linux 위로
+        self.root.bind_all("<Button-5>", self._on_mousewheel)        # Linux 아래로
+        return self.content
+
+    def _sync_scrollregion(self) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_mousewheel(self, event) -> None:
+        # 로그창 위에서 굴릴 때는 로그창이 스크롤되어야 하므로 전체 스크롤은 건너뛴다.
+        widget = event.widget
+        while widget is not None:
+            if widget is getattr(self, "log_box", None):
+                return
+            widget = getattr(widget, "master", None)
+        if event.num == 4:
+            self.canvas.yview_scroll(-3, "units")
+        elif event.num == 5:
+            self.canvas.yview_scroll(3, "units")
+        else:
+            self.canvas.yview_scroll(-1 * (event.delta // 120) * 3, "units")
 
     # ───────────── UI 구성 ─────────────
     def _build_widgets(self) -> None:
-        parent = self.root
+        parent = self._build_scroll_shell()
 
         # 1. 거래소 / API 설정
         api_frame = tk.LabelFrame(parent, text=" 거래소 / API 설정 ", padx=10, pady=10)
