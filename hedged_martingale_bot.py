@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 import argparse
 import json
@@ -777,6 +777,9 @@ def make_qty_provider(broker) -> Callable[[float], float]:
         if balance <= 0:
             logger.warning("계좌 잔고를 확인할 수 없어 진입하지 않습니다. API 키 권한과 선물 지갑 잔고를 확인해주세요.")
             return 0.0
+        if price is None or not (price > 0):
+            logger.warning("시세가 비정상(%s)이라 진입하지 않습니다.", price)
+            return 0.0
         notional_usdt = balance * LEVERAGE * INITIAL_MARGIN_PCT  # 레버리지한 잔고의 2%
         qty_btc = notional_usdt / price
         if SHOW_QTY_DETAIL:
@@ -871,7 +874,13 @@ class MartingaleModule:
         if base_qty > 0:
             ratio = actual_qty / base_qty
             if ratio > 0:
-                step = int(round(math.log2(ratio + 1)))
+                # 기준 수량은 '지금' 잔고로 계산한 값이라, 진입 이후 잔고가 변했으면
+                # 추정이 어긋난다. 어긋나는 방향에 따라 위험이 다르다.
+                #   · 단계를 실제보다 높게 잡으면 → 최대 단계에 일찍 닿아 추가 진입을 덜 한다(안전)
+                #   · 단계를 실제보다 낮게 잡으면 → 설계보다 한 번 더 물타기해 노출이 커진다(위험)
+                # 그래서 반올림 대신 올림으로 안전한 쪽에 붙인다. 잔고가 딱 맞는 경우
+                # (ratio = 2^step - 1)에는 부동소수점 오차로 한 단계 튀지 않게 여유를 준다.
+                step = math.ceil(math.log2(ratio + 1) - 1e-9)
         step = min(MAX_STEPS, max(1, step))
         base = actual_qty / (2 ** step - 1)
         # 같은 평단가로 base, 2base, 4base... 형태의 체결 내역을 재구성(합계 = actual_qty)
@@ -909,6 +918,12 @@ class MartingaleModule:
     def on_tick(self, price: float, rsi: Optional[float], bb: Optional[Tuple[float, float, float]], now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
         if self.halted or rsi is None or bb is None:
+            return
+        # 시세가 0이거나 음수/NaN으로 들어오면(거래소 응답 이상, 캔들 누락 등) 계산이 전부
+        # 망가진다. 특히 진입 수량은 금액/가격이라 0으로 나누며 매매 스레드가 통째로 죽는다.
+        # 이런 값은 매매 판단에 쓰지 않고 그냥 넘긴다(다음 조회에서 정상 값이 오면 재개).
+        if price is None or not (price > 0) or math.isinf(price):
+            logger.debug("비정상 시세(%s)를 건너뜁니다.", price)
             return
 
         if not self.in_position:
@@ -1061,13 +1076,19 @@ class HedgedMartingaleBot:
         self._sync_with_exchange()
 
     def _load_state(self) -> None:
-        if not os.path.exists(self.state_path):
-            return
-        try:
-            with open(self.state_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            logger.debug("이전 매매 상태 파일을 읽지 못했습니다: %s", e)
+        # 상태 파일이 깨졌으면 직전 백업(.bak)으로 한 번 더 시도한다. 상태를 살려내면
+        # 진입 단계가 정확히 복원되고, 수량만 보고 단계를 되짚는 추정 경로를 타지 않는다.
+        data = None
+        for path in (self.state_path, self.state_path + ".bak"):
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                break
+            except Exception as e:
+                logger.debug("매매 상태 파일을 읽지 못했습니다(%s): %s", path, e)
+        if data is None:
             return
         self.long.load_state(data.get("long", {}))
         self.short.load_state(data.get("short", {}))
@@ -1118,13 +1139,34 @@ class HedgedMartingaleBot:
                 logger.debug("%s 거래소에 실제 포지션이 없어 내부 상태를 초기화했습니다.", module.side.value)
 
     def _save_state(self) -> None:
+        """상태를 원자적으로 저장한다(임시파일에 다 쓴 뒤 교체).
+
+        예전처럼 대상 파일을 직접 열어 쓰면, 쓰는 도중에 전원이 나가거나 프로그램이
+        죽었을 때 파일이 잘린 채 남아 다음 실행에서 상태를 통째로 잃는다. 상태를 잃으면
+        거래소 수량만 보고 진입 단계를 되짚어야 해서 정확도가 떨어지므로, 저장 자체를
+        깨지지 않게 만드는 편이 낫다. 직전 상태는 .bak으로 남겨 한 번 더 보호한다.
+        """
         if not self.state_path:
             return
+        tmp = self.state_path + ".tmp"
         try:
-            with open(self.state_path, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"long": self.long.to_state(), "short": self.short.to_state()}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            if os.path.exists(self.state_path):
+                try:
+                    os.replace(self.state_path, self.state_path + ".bak")
+                except Exception:
+                    pass    # 백업 실패는 치명적이지 않으므로 저장 자체는 계속 진행한다
+            os.replace(tmp, self.state_path)
         except Exception as e:
             logger.debug("매매 상태 저장 실패: %s", e)
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
 
     def on_price(self, price: float, closes_window: List[float], now: Optional[float] = None) -> None:
         rsi = Indicators.rsi(closes_window)
