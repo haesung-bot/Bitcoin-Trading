@@ -28,6 +28,38 @@ import hedged_martingale_bot as core
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".hedged_martingale_bot_gui_config.json")
 
 
+# 이 화면 파일이 엔진 파일에서 반드시 필요로 하는 것들. 하나라도 없으면 버전이 어긋난 것이다.
+REQUIRED_CORE_ATTRS = ("HEARTBEAT_MARK", "martingale_ladder", "SHOW_QTY_DETAIL",
+                       "TELEGRAM_SHOW_BALANCE", "parse_chat_ids")
+
+def check_core_compatible(root=None) -> bool:
+    """엔진 파일(hedged_martingale_bot.py)이 이 화면 파일과 맞는 버전인지 확인한다.
+
+    두 파일 중 하나만 새로 덮어쓰면, 화면은 최신인데 엔진이 구버전이라 없는 값을
+    참조하게 된다. 그러면 로그창이 통째로 비어 있고 상태줄이 '계좌 연결 중...'에서
+    멈춘 것처럼 보여 원인을 찾기가 어렵다. 그래서 시작할 때 대놓고 알린다.
+    """
+    missing = [name for name in REQUIRED_CORE_ATTRS if not hasattr(core, name)]
+    if not missing:
+        return True
+    msg = (
+        f"엔진 파일이 예전 버전입니다.\n\n"
+        f"  · 화면 파일: 최신\n"
+        f"  · 엔진 파일: v{getattr(core, 'VERSION', '알 수 없음')}\n\n"
+        f"두 파일을 함께 최신으로 바꿔야 합니다.\n"
+        f"  1) hedged_martingale_bot.py  (엔진)\n"
+        f"  2) {os.path.basename(__file__)}  (화면)\n\n"
+        f"exe로 만드셨다면 build, dist 폴더와 .spec 파일을 지우고 다시 빌드하세요.\n"
+        f"(예전 빌드가 남아 있으면 새 파일이 반영되지 않습니다.)"
+    )
+    try:
+        messagebox.showerror("파일 버전이 서로 다릅니다", msg)
+    except Exception:
+        pass
+    print(msg)
+    return False
+
+
 class QueueLogHandler(logging.Handler):
     def __init__(self, log_queue: queue.Queue[str]):
         super().__init__()
@@ -213,8 +245,20 @@ class HedgedMartingaleGUI:
         core.logger.setLevel(logging.INFO)
 
     def _poll_log_queue(self) -> None:
+        # 여기서 예외가 새어 나가면 after 루프가 끊겨 로그창이 영영 비어버린다.
+        # (예: 화면 파일만 최신이고 엔진 파일이 구버전이라 없는 값을 참조하는 경우)
         while not self.log_queue.empty():
-            self._append_log(self.log_queue.get_nowait())
+            line = self.log_queue.get_nowait()
+            try:
+                self._append_log(line)
+            except Exception:
+                try:
+                    self.log_box.configure(state="normal")
+                    self.log_box.insert("end", line + "\n")
+                    self.log_box.see("end")
+                    self.log_box.configure(state="disabled")
+                except Exception:
+                    pass
         # 매매 스레드가 요청한 화면 갱신을 메인 스레드에서 실행한다.
         while not self.ui_queue.empty():
             try:
@@ -231,7 +275,7 @@ class HedgedMartingaleGUI:
         self.log_box.configure(state="normal")
         # 시세/상태 표시줄(하트비트)은 매번 새로 쌓지 않고 직전 줄을 갈아끼운다.
         # 30초마다 한 줄씩 쌓이면 정작 중요한 진입/청산 기록이 위로 밀려나기 때문이다.
-        is_beat = core.HEARTBEAT_MARK in text
+        is_beat = getattr(core, "HEARTBEAT_MARK", "\u23f1") in text
         if is_beat and self._last_line_is_heartbeat:
             self.log_box.delete("end-2l", "end-1l")
         self.log_box.insert("end", text + "\n")
@@ -678,6 +722,11 @@ class HedgedMartingaleGUI:
 
 def main() -> None:
     root = tk.Tk()
+    root.withdraw()
+    if not check_core_compatible(root):
+        root.destroy()
+        return
+    root.deiconify()
     HedgedMartingaleGUI(root)
     root.mainloop()
 
