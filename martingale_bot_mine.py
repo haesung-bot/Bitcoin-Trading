@@ -7,7 +7,7 @@ martingale_bot_mine.py
 
   · 텔레그램 봇 토큰 / Chat ID 입력 + 연결 테스트 버튼
   · 익절 % / 물타기 간격 % / 손절 % 까지 직접 조정
-  · '상세 로그'를 켜면 진입 금액 계산식, 계약수 변환, 진입 단계 등 내부 동작까지 표시
+  · '상세 로그'를 켜면 진입 금액 계산식, 주문 실행 내역 등 내부 동작까지 표시
   · 저장된 매매상태 초기화 버튼
 
 설정/기록 파일은 배포용과 겹치지 않도록 별도 경로를 쓴다(두 프로그램을 같이 써도 안전).
@@ -35,6 +35,9 @@ CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".martingale_bot_mine_config
 # 배포용과 상태/기록이 섞이지 않도록 개인용 전용 경로를 쓴다.
 core.STATE_PATH = os.path.join(os.path.expanduser("~"), ".martingale_bot_mine_state.json")
 core.TRADE_LOG_PATH = os.path.join(os.path.expanduser("~"), ".martingale_bot_mine_trades.json")
+
+# 개인용은 BTC 수량/계약수 대신 USDT 금액과 진입 차수를 그대로 보여준다.
+core.SHOW_QTY_DETAIL = False
 
 
 class QueueLogHandler(logging.Handler):
@@ -208,7 +211,7 @@ class PersonalTradingGUI:
                  fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=4, column=2, sticky="w", padx=(8, 0))
 
         self.verbose_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(config_frame, text="상세 로그 (진입 금액 계산·계약수 변환·진입 단계까지 표시)",
+        tk.Checkbutton(config_frame, text="상세 로그 (진입 금액 계산식·주문 실행 내역까지 표시)",
                        variable=self.verbose_var, command=self._apply_log_level).grid(
             row=5, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
@@ -246,8 +249,8 @@ class PersonalTradingGUI:
         log_frame.pack(fill="both", expand=True, padx=15, pady=5)
 
         self.status_var = tk.StringVar(value="상태: 대기 중")
-        tk.Label(log_frame, textvariable=self.status_var, anchor="w",
-                 font=("맑은 고딕", 10, "bold")).pack(fill="x", pady=(0, 5))
+        tk.Label(log_frame, textvariable=self.status_var, anchor="w", justify="left",
+                 font=("맑은 고딕", 9, "bold")).pack(fill="x", pady=(0, 5))
 
         log_inner = tk.Frame(log_frame)
         log_inner.pack(fill="both", expand=True)
@@ -508,7 +511,7 @@ class PersonalTradingGUI:
 
     # ───────────── 개인용 전용 기능 ─────────────
     def _apply_log_level(self) -> None:
-        """상세 로그 체크 시 내부 동작(진입 금액 계산·계약수 변환 등)까지 화면에 표시한다."""
+        """상세 로그 체크 시 내부 동작(진입 금액 계산식·주문 실행 내역 등)까지 화면에 표시한다."""
         level = logging.DEBUG if self.verbose_var.get() else logging.INFO
         core.logger.setLevel(level)
         for h in core.logger.handlers:
@@ -764,18 +767,31 @@ class PersonalTradingGUI:
             self._run_on_ui(self._set_stopped_ui)
 
     def _update_position_status(self) -> None:
-        """상태줄에 현재 보유 포지션을 계속 갱신해서 보여준다(사용자가 매매 상태만 확인 가능하도록)."""
+        """상태줄에 현재 포지션을 USDT 기준으로 보여주고, 1~4차 진입가/금액을 함께 표시한다.
+
+        아직 안 온 단계는 봇이 실제로 쓸 규칙 그대로 굴려서 계산한 값이라, 여기 찍힌
+        가격에 도달하면 그 금액으로 진입한다.
+        """
         bot = self.bot
         if bot is None:
             return
 
-        def describe(module) -> str:
+        def describe(module, label) -> str:
             if not module.in_position:
-                return "없음"
-            return f"{module.total_qty:.6f} BTC @ {module.avg_price:,.2f}"
+                return f"{label}  없음"
+            invested = module.total_qty * module.avg_price
+            head = (f"{label}  {module.step}차 진입 중 | 투입 {invested:,.0f} USDT | "
+                    f"평단 {module.avg_price:,.2f}")
+            steps = []
+            for item in core.martingale_ladder(module.side, module.fills):
+                mark = "✓" if item["done"] else " "
+                steps.append(f"{mark}{item['stage']}차 {item['price']:,.0f} ({item['usdt']:,.0f})")
+            return head + "\n        " + "   ".join(steps)
 
         self.status_var.set(
-            f"상태: 매매 중 ({self.exchange_label})  |  롱: {describe(bot.long)}  |  숏: {describe(bot.short)}"
+            f"상태: 매매 중 ({self.exchange_label})\n"
+            + describe(bot.long, "롱 ") + "\n"
+            + describe(bot.short, "숏 ")
         )
         self._status_after_id = self.root.after(2000, self._update_position_status)
 

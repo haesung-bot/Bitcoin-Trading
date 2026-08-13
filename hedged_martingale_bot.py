@@ -447,6 +447,35 @@ class Indicators:
 
 
 # ───────────── 텔레그램 알림 ─────────────
+# 개인용 화면에서는 BTC 수량/계약수 대신 USDT 금액만 보고 싶다는 요청이 있어,
+# 표시 방식을 이 플래그로 고른다. 기본값(True)은 배포용의 기존 표시를 그대로 유지한다.
+SHOW_QTY_DETAIL = True
+
+
+def martingale_ladder(side, fills, max_steps: int = None) -> List[dict]:
+    """지금 체결 내역을 기준으로 1~4단계의 진입가와 진입금액(USDT)을 계산한다.
+
+    이미 체결된 단계는 실제 값을, 아직 안 온 단계는 예상 값을 돌려준다. 예상값은
+    봇이 실제로 쓰는 규칙(평단가 대비 STEP_TRIGGER_PCT마다 직전 수량의 2배)을
+    그대로 한 단계씩 굴려서 계산하므로, 실제 진입가와 같은 값이 나온다.
+    """
+    if not fills:
+        return []
+    if max_steps is None:
+        max_steps = MAX_STEPS
+    sim = [Fill(f.price, f.qty) for f in fills]
+    out = [{"stage": i + 1, "price": f.price, "usdt": f.price * f.qty, "done": True}
+           for i, f in enumerate(sim)]
+    while len(sim) < max_steps:
+        total_qty = sum(f.qty for f in sim)
+        avg = sum(f.price * f.qty for f in sim) / total_qty
+        trigger = avg * (1 - STEP_TRIGGER_PCT) if side == Side.LONG else avg * (1 + STEP_TRIGGER_PCT)
+        qty = sim[-1].qty * 2
+        sim.append(Fill(trigger, qty))
+        out.append({"stage": len(sim), "price": trigger, "usdt": trigger * qty, "done": False})
+    return out
+
+
 def parse_chat_ids(raw: str) -> List[str]:
     """Chat ID 입력값을 여러 개로 쪼갠다.
 
@@ -708,10 +737,16 @@ class LiveBroker:
             qty_contracts = float(self.exchange.amount_to_precision(self.symbol, round(qty / contract_size, 8)))
         except Exception:
             qty_contracts = 0.0
-        logger.debug(
-            "주문 실행: BTC수량=%.8f / 계약크기=%s / 계약수=%.4f / 방향=%s / %s / 가격=%.2f",
-            qty, contract_size, qty_contracts, side.value, "진입" if is_entry else "청산", price,
-        )
+        if SHOW_QTY_DETAIL:
+            logger.debug(
+                "주문 실행: BTC수량=%.8f / 계약크기=%s / 계약수=%.4f / 방향=%s / %s / 가격=%.2f",
+                qty, contract_size, qty_contracts, side.value, "진입" if is_entry else "청산", price,
+            )
+        else:
+            logger.debug(
+                "주문 실행: %s USDT / 방향=%s / %s / 가격=%.2f",
+                f"{qty * price:,.2f}", side.value, "진입" if is_entry else "청산", price,
+            )
         if qty_contracts <= 0:
             raise RuntimeError("주문 가능 최소 금액에 미달합니다. 계좌 잔고를 확인해주세요.")
         self._check_min_notional(qty_contracts, price)
@@ -744,10 +779,16 @@ def make_qty_provider(broker) -> Callable[[float], float]:
             return 0.0
         notional_usdt = balance * LEVERAGE * INITIAL_MARGIN_PCT  # 레버리지한 잔고의 2%
         qty_btc = notional_usdt / price
-        logger.debug(
-            "진입 규모 계산: 잔고=%.4f x %sx x %.2f%% = %.4f USDT (= %.8f BTC)",
-            balance, LEVERAGE, INITIAL_MARGIN_PCT * 100, notional_usdt, qty_btc,
-        )
+        if SHOW_QTY_DETAIL:
+            logger.debug(
+                "진입 규모 계산: 잔고=%.4f x %sx x %.2f%% = %.4f USDT (= %.8f BTC)",
+                balance, LEVERAGE, INITIAL_MARGIN_PCT * 100, notional_usdt, qty_btc,
+            )
+        else:
+            logger.debug(
+                "진입 규모 계산: 잔고 %s x %s배 x %.2f%% = %s USDT",
+                f"{balance:,.2f}", LEVERAGE, INITIAL_MARGIN_PCT * 100, f"{notional_usdt:,.2f}",
+            )
         return broker.quantize_qty(qty_btc, price)
 
     return _provider
@@ -981,9 +1022,16 @@ class MartingaleModule:
 
     def _notify_entry(self, price: float, qty: float) -> None:
         amount_usdt = qty * price
+        if SHOW_QTY_DETAIL:
+            # 배포용: 진입 단계(차수)를 드러내지 않고 보유 수량만 보여준다.
+            head = f"▶ {self._side_ko} 진입"
+            holding = f"보유 {self.total_qty:.6f} BTC"
+        else:
+            head = f"▶ {self._side_ko} {self.step}차 진입"
+            holding = f"누적 투입 {self.total_qty * self.avg_price:,.2f} USDT"
         self.notifier.send(
-            f"▶ {self._side_ko} 진입 | 금액 {amount_usdt:,.2f} USDT | 가격 {price:,.2f}\n"
-            f"   보유 {self.total_qty:.6f} BTC | 평균단가 {self.avg_price:,.2f} | "
+            f"{head} | 금액 {amount_usdt:,.2f} USDT | 가격 {price:,.2f}\n"
+            f"   {holding} | 평균단가 {self.avg_price:,.2f} | "
             f"잔고 {self.broker.get_balance():,.2f} USDT"
         )
 
