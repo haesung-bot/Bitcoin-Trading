@@ -39,6 +39,9 @@ core.TRADE_LOG_PATH = os.path.join(os.path.expanduser("~"), ".martingale_bot_min
 # 개인용은 BTC 수량/계약수 대신 USDT 금액과 진입 차수를 그대로 보여준다.
 core.SHOW_QTY_DETAIL = False
 
+# 그룹방으로도 알림을 보내므로 텔레그램 메시지에서는 잔고를 뺀다(화면 로그에는 계속 표시).
+core.TELEGRAM_SHOW_BALANCE = False
+
 # 창 높이를 내용 전체 높이의 몇 배로 열지(나머지는 스크롤로 본다).
 WINDOW_HEIGHT_RATIO = 0.7
 

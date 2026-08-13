@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 
 import argparse
 import json
@@ -451,6 +451,10 @@ class Indicators:
 # 표시 방식을 이 플래그로 고른다. 기본값(True)은 배포용의 기존 표시를 그대로 유지한다.
 SHOW_QTY_DETAIL = True
 
+# 텔레그램으로 나가는 알림에 잔고를 넣을지. False면 화면 로그에는 잔고가 계속 보이고
+# 텔레그램(그룹방 포함)으로 나가는 메시지에서만 잔고가 빠진다.
+TELEGRAM_SHOW_BALANCE = True
+
 
 def martingale_ladder(side, fills, max_steps: int = None) -> List[dict]:
     """지금 체결 내역을 기준으로 1~4단계의 진입가와 진입금액(USDT)을 계산한다.
@@ -501,10 +505,16 @@ class TelegramNotifier:
         # 같은 대상에 대해 같은 실패 사유를 매 체결마다 반복 경고하지 않도록 기억해둔다.
         self._warned: set = set()
 
-    def send(self, text: str) -> None:
+    def send(self, text: str, telegram_text: Optional[str] = None) -> None:
+        """화면 로그에는 text를, 텔레그램에는 telegram_text를 보낸다.
+
+        telegram_text를 주면 텔레그램으로 나가는 내용만 따로 줄일 수 있다.
+        그룹방처럼 여러 사람이 보는 곳에 잔고 같은 개인 정보를 흘리지 않기 위한 것이다.
+        """
         logger.info("%s", text)
         if not self.token or not self.chat_ids:
             return  # 텔레그램 미설정 시 위 로그(화면/파일)로만 알린다
+        text = text if telegram_text is None else telegram_text
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         for chat_id in self.chat_ids:
             # 한 대상이 실패해도 나머지 대상에는 계속 보낸다(그룹방 하나가 막혀도 DM은 와야 함).
@@ -1044,18 +1054,16 @@ class MartingaleModule:
         else:
             head = f"▶ {self._side_ko} {self.step}차 진입"
             holding = f"누적 투입 {self.total_qty * self.avg_price:,.2f} USDT"
-        self.notifier.send(
-            f"{head} | 금액 {amount_usdt:,.2f} USDT | 가격 {price:,.2f}\n"
-            f"   {holding} | 평균단가 {self.avg_price:,.2f} | "
-            f"잔고 {self.broker.get_balance():,.2f} USDT"
-        )
+        body = (f"{head} | 금액 {amount_usdt:,.2f} USDT | 가격 {price:,.2f}\n"
+                f"   {holding} | 평균단가 {self.avg_price:,.2f}")
+        full = f"{body} | 잔고 {self.broker.get_balance():,.2f} USDT"
+        self.notifier.send(full, body if not TELEGRAM_SHOW_BALANCE else None)
 
     def _notify_close(self, price: float, reason: str, pnl: float) -> None:
         result = "수익" if pnl >= 0 else "손실"
-        self.notifier.send(
-            f"■ {self._side_ko} 청산 | {result} {pnl:+,.2f} USDT | 가격 {price:,.2f}\n"
-            f"   잔고 {self.broker.get_balance():,.2f} USDT"
-        )
+        head = f"■ {self._side_ko} 청산 | {result} {pnl:+,.2f} USDT | 가격 {price:,.2f}"
+        full = f"{head}\n   잔고 {self.broker.get_balance():,.2f} USDT"
+        self.notifier.send(full, head if not TELEGRAM_SHOW_BALANCE else None)
 
 
 # ───────────── 봇 엔진 ─────────────
