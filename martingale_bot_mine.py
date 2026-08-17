@@ -111,6 +111,8 @@ class PersonalTradingGUI:
         self._load_saved_credentials()
         self._load_trade_history()
         self._install_log_handler()
+        # 로그 핸들러가 붙은 뒤에 적용해야 한다(_install_log_handler가 레벨을 INFO로 되돌린다).
+        self._apply_log_level()
         self._poll_log_queue()
         self._log(f"ℹ️ 개인용 자동매매 v{core.VERSION}")
         self._log(f"ℹ️ 상태파일: {core.STATE_PATH}")
@@ -530,10 +532,24 @@ class PersonalTradingGUI:
 
         if data.get("save_keys") is not None:
             self.save_keys_var.set(bool(data["save_keys"]))
-        if data.get("leverage"):
-            self.leverage_var.set(str(data["leverage"]))
-        if data.get("pos_pct"):
-            self.pos_pct_var.set(str(data["pos_pct"]))
+
+        # 거래소와 무관한 설정(텔레그램/전략값/상세로그)은 프로그램을 처음 켤 때만 불러온다.
+        # 거래소를 바꿀 때마다 다시 덮어쓰면, 방금 입력하고 아직 저장 안 된 값이 날아갈 수 있다.
+        if exchange_name is not None:
+            return
+
+        for key, var in (("leverage", self.leverage_var),
+                         ("pos_pct", self.pos_pct_var),
+                         ("tp_pct", self.tp_pct_var),
+                         ("step_pct", self.step_pct_var),
+                         ("sl_pct", self.sl_pct_var),
+                         ("tg_token", self.tg_token_var),
+                         ("tg_chat", self.tg_chat_var)):
+            value = data.get(key)
+            if value not in (None, ""):
+                var.set(str(value))
+        if data.get("verbose") is not None:
+            self.verbose_var.set(bool(data["verbose"]))
 
     def _save_credentials(self, exchange_name: str = None) -> None:
         try:
