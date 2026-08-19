@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.0.7"
+VERSION = "1.0.8"
 
 import argparse
 import json
@@ -616,6 +616,7 @@ class LiveBroker:
                 raise RuntimeError(f"{exchange_name}는 Passphrase가 필요합니다. 입력해주세요.")
             config["password"] = passphrase
         self.exchange = exchange_cls(config)
+        self._last_balance_error: Optional[str] = None   # 같은 오류 반복 안내를 막기 위해 기억
         self.symbol = symbol or EXCHANGE_SYMBOLS.get(exchange_name, SYMBOL)
         self.exchange.load_markets()  # market()/set_position_mode()가 미리 로드된 마켓 정보를 필요로 함
         # leverage 미지정 시 실행 시점의 전역 LEVERAGE를 사용(GUI에서 변경한 값이 반영되도록).
@@ -684,12 +685,55 @@ class LiveBroker:
         # 자금이 포지션 증거금에 묶이면 free=0이 될 수 있어, free가 0이면 total로 대체한다.
         return float(free if free else (total or 0.0))
 
+    @staticmethod
+    def explain_api_error(err: Exception) -> Optional[str]:
+        """거래소가 돌려준 오류를 보고, 사용자가 실제로 뭘 해야 하는지 알려준다.
+
+        '잔고 조회 실패: {"message":"Request IP not in whitelist..."}' 처럼 원문만 찍으면
+        무엇을 고쳐야 하는지 알기 어렵다. 스스로 낫지 않는 설정 문제는 조치 방법까지 짚어준다.
+        """
+        text = str(err)
+        low = text.lower()
+        # 서버 IP가 API 키의 허용 목록에 없음 — 가장 흔하고, 안내가 없으면 원인을 찾기 어렵다
+        if "not in whitelist" in low or "ip not allow" in low or "invalid ip" in low:
+            ip = ""
+            m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", text)
+            if m:
+                ip = m.group(1)
+            return (
+                "이 서버의 IP가 API 키에 허용되어 있지 않습니다"
+                + (f" (차단된 IP: {ip})" if ip else "")
+                + ".\n"
+                "   거래소 API 키 설정에서 'IP 허용 목록(IP whitelist)'에 위 IP를 추가하거나,\n"
+                "   허용 목록 자체를 비워주세요. 추가 후 몇 분 뒤 자동으로 다시 시도합니다."
+            )
+        if any(k in low for k in ("invalid key", "invalid api", "apikey", "api_key", "api key",
+                                  "api-key", "signature", "invalid sign", "authentication",
+                                  "unauthorized", "invalid_key")):
+            return ("API Key 또는 Secret Key가 올바르지 않습니다.\n"
+                    "   오타가 없는지, 이 거래소용 키가 맞는지 확인해주세요.")
+        if any(k in low for k in ("permission", "forbidden", "not authorized", "read only")):
+            return ("API 키에 선물(Futures) 거래 권한이 없습니다.\n"
+                    "   거래소에서 키 권한에 선물 거래를 켜주세요.")
+        return None
+
     def get_balance(self) -> float:
         # 1) 기본 선물계좌(classic futures) 조회
         try:
             balance = self._read_usdt_balance({})
+            if self._last_balance_error is not None:
+                logger.info("거래소 연결이 정상으로 돌아왔습니다.")
+                self._last_balance_error = None
         except Exception as e:
-            logger.warning("잔고 조회 실패: %s", e)
+            # 같은 오류가 30초마다 반복되면 화면이 도배되므로, 사유가 바뀔 때만 안내한다.
+            hint = self.explain_api_error(e)
+            key = hint or str(e)
+            if key != self._last_balance_error:
+                self._last_balance_error = key
+                if hint:
+                    logger.warning("계좌를 조회하지 못했습니다. %s", hint)
+                else:
+                    logger.warning("잔고 조회 실패: %s", e)
             balance = 0.0
         # 2) 0이면 통합계좌(Unified Account)에 자금이 있을 수 있어 재조회
         if balance <= 0 and self.exchange_name == "Gate.io":
@@ -834,7 +878,9 @@ def make_qty_provider(broker) -> Callable[[float], float]:
         # 이때 0을 돌려주지 않으면 최소 주문 수량으로 보정되어, 잘못된 근거로 실거래가
         # 시작되고 그 수량을 기준으로 물타기까지 이어지므로 반드시 진입을 막아야 한다.
         if balance <= 0:
-            logger.warning("계좌 잔고를 확인할 수 없어 진입하지 않습니다. API 키 권한과 선물 지갑 잔고를 확인해주세요.")
+            # 왜 못 읽었는지는 바로 위에서 get_balance가 이미 구체적으로 안내했다.
+            # 여기서는 그래서 매매를 안 한다는 사실만 짧게 남긴다(같은 안내 중복 방지).
+            logger.warning("계좌 잔고를 확인할 수 없어 진입하지 않습니다.")
             return 0.0
         if price is None or not (price > 0):
             logger.warning("시세가 비정상(%s)이라 진입하지 않습니다.", price)
