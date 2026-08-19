@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.0.6"
+VERSION = "1.0.7"
 
 import argparse
 import json
@@ -449,6 +449,10 @@ class Indicators:
 # ───────────── 텔레그램 알림 ─────────────
 # 개인용 화면에서는 BTC 수량/계약수 대신 USDT 금액만 보고 싶다는 요청이 있어,
 # 표시 방식을 이 플래그로 고른다. 기본값(True)은 배포용의 기존 표시를 그대로 유지한다.
+# 증거금 모드: "cross"(교차) 또는 "isolated"(격리).
+# 격리는 레버리지가 높을 때 봇의 하드손절보다 거래소 강제청산이 먼저 와서 위험하다.
+MARGIN_MODE = os.environ.get("MARGIN_MODE", "cross")
+
 SHOW_QTY_DETAIL = True
 
 # 텔레그램으로 나가는 알림에 잔고를 넣을지. False면 화면 로그에는 잔고가 계속 보이고
@@ -627,10 +631,50 @@ class LiveBroker:
                 logger.debug("Hedge/Dual Mode는 이미 설정되어 있습니다 (정상).")
             else:
                 logger.debug("Hedge/Dual Mode 설정 실패: %s", e)
+        self._setup_margin_mode(leverage)
+
+    def _setup_margin_mode(self, leverage: int) -> None:
+        """증거금 모드(교차/격리)와 레버리지를 설정한다.
+
+        격리(Isolated)는 그 포지션에 배정된 증거금(명목/레버리지)만 손실을 받아낸다.
+        레버리지가 높으면 그 증거금이 얇아져서, 봇의 하드손절이 작동하기도 전에 거래소가
+        먼저 강제청산해 버린다(예: 격리 50배면 평단 대비 약 -3.6%에서 청산되는데
+        하드손절은 -2.5%에서 작동해야 하므로 순서가 뒤집힌다). 그래서 이 봇은 계좌 잔고
+        전체가 포지션을 받쳐주는 교차(Cross)를 기본으로 쓴다.
+
+        거래소마다 지정 방법이 다르다.
+          · Gate.io: 별도 API가 없고, set_leverage에 marginMode를 넘기면
+            leverage=0 + cross_leverage_limit 형태로 나간다(0이 곧 교차 마진).
+          · 나머지: set_margin_mode로 지정한 뒤 레버리지를 따로 건다.
+        """
+        mode = "cross" if MARGIN_MODE != "isolated" else "isolated"
+        ko = "교차(Cross)" if mode == "cross" else "격리(Isolated)"
+        applied = False
         try:
-            self.exchange.set_leverage(leverage, self.symbol)
+            if self.exchange_name == "Gate.io":
+                self.exchange.set_leverage(leverage, self.symbol, {"marginMode": mode})
+            else:
+                try:
+                    self.exchange.set_margin_mode(mode, self.symbol)
+                except Exception as e:
+                    # 이미 같은 모드면 거래소가 에러로 응답하는 경우가 있다(정상).
+                    if not any(k in str(e).lower() for k in ("no change", "not modified", "same", "not changed")):
+                        logger.debug("증거금 모드 설정 실패: %s", e)
+                self.exchange.set_leverage(leverage, self.symbol)
+            applied = True
         except Exception as e:
-            logger.debug("레버리지 설정 실패: %s", e)
+            logger.debug("증거금 모드/레버리지 설정 실패: %s", e)
+
+        if applied:
+            logger.info("증거금 모드: %s / 레버리지 %s배", ko, leverage)
+        else:
+            # 포지션이 열려 있으면 거래소가 변경을 거부한다. 이 경우 계좌에 이미 걸려 있는
+            # 모드로 매매되므로, 사용자가 직접 확인할 수 있게 경고로 남긴다.
+            logger.warning(
+                "증거금 모드/레버리지를 설정하지 못했습니다. 거래소 계좌에 이미 설정된 값으로 매매합니다. "
+                "(대개 포지션이나 미체결 주문이 있으면 변경이 거부됩니다) 거래소에서 %s / %s배 인지 확인해주세요.",
+                ko, leverage,
+            )
 
     def _read_usdt_balance(self, params: dict) -> float:
         bal = self.exchange.fetch_balance(params)
