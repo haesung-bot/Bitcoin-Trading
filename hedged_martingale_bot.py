@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.0.8"
+VERSION = "1.0.9"
 
 import argparse
 import json
@@ -617,6 +617,7 @@ class LiveBroker:
             config["password"] = passphrase
         self.exchange = exchange_cls(config)
         self._last_balance_error: Optional[str] = None   # 같은 오류 반복 안내를 막기 위해 기억
+        self.last_error_kind: Optional[str] = None       # "fatal"이면 스스로 낫지 않는 설정 문제
         self.symbol = symbol or EXCHANGE_SYMBOLS.get(exchange_name, SYMBOL)
         self.exchange.load_markets()  # market()/set_position_mode()가 미리 로드된 마켓 정보를 필요로 함
         # leverage 미지정 시 실행 시점의 전역 LEVERAGE를 사용(GUI에서 변경한 값이 반영되도록).
@@ -651,6 +652,7 @@ class LiveBroker:
         mode = "cross" if MARGIN_MODE != "isolated" else "isolated"
         ko = "교차(Cross)" if mode == "cross" else "격리(Isolated)"
         applied = False
+        setup_error: Optional[Exception] = None
         try:
             if self.exchange_name == "Gate.io":
                 self.exchange.set_leverage(leverage, self.symbol, {"marginMode": mode})
@@ -664,10 +666,15 @@ class LiveBroker:
                 self.exchange.set_leverage(leverage, self.symbol)
             applied = True
         except Exception as e:
+            setup_error = e
             logger.debug("증거금 모드/레버리지 설정 실패: %s", e)
 
         if applied:
             logger.info("증거금 모드: %s / 레버리지 %s배", ko, leverage)
+        elif setup_error is not None and self.explain_api_error(setup_error):
+            # 키가 틀렸거나 IP가 막힌 경우다. '포지션 때문'이라고 잘못 안내하면 안 된다.
+            logger.warning("증거금 모드/레버리지를 설정하지 못했습니다. %s",
+                           self.explain_api_error(setup_error))
         else:
             # 포지션이 열려 있으면 거래소가 변경을 거부한다. 이 경우 계좌에 이미 걸려 있는
             # 모드로 매매되므로, 사용자가 직접 확인할 수 있게 경고로 남긴다.
@@ -684,6 +691,23 @@ class LiveBroker:
         total = usdt.get("total")
         # 자금이 포지션 증거금에 묶이면 free=0이 될 수 있어, free가 0이면 total로 대체한다.
         return float(free if free else (total or 0.0))
+
+    @staticmethod
+    def classify_api_error(err: Exception) -> Optional[Tuple[str, str]]:
+        """오류를 (성격, 안내문)으로 분류한다.
+
+        성격이 "fatal"이면 사용자가 설정을 고치기 전까지 절대 스스로 낫지 않는다.
+        이런 상태로 매매를 계속 돌려두면 화면은 '매매 중'인데 실제로는 아무것도 못 하는
+        상태가 되므로, 시작 단계에서 잡아 멈추는 편이 낫다.
+        "recoverable"은 사용자가 거래소에서 고치면 그대로 두어도 자동으로 복구된다.
+        """
+        hint = LiveBroker.explain_api_error(err)
+        if hint is None:
+            return None
+        low = str(err).lower()
+        if "not in whitelist" in low or "ip not allow" in low or "invalid ip" in low:
+            return ("recoverable", hint)   # IP만 추가하면 다음 조회에서 바로 통과한다
+        return ("fatal", hint)
 
     @staticmethod
     def explain_api_error(err: Exception) -> Optional[str]:
@@ -724,9 +748,12 @@ class LiveBroker:
             if self._last_balance_error is not None:
                 logger.info("거래소 연결이 정상으로 돌아왔습니다.")
                 self._last_balance_error = None
+            self.last_error_kind = None
         except Exception as e:
             # 같은 오류가 30초마다 반복되면 화면이 도배되므로, 사유가 바뀔 때만 안내한다.
-            hint = self.explain_api_error(e)
+            classified = self.classify_api_error(e)
+            self.last_error_kind = classified[0] if classified else None
+            hint = classified[1] if classified else None
             key = hint or str(e)
             if key != self._last_balance_error:
                 self._last_balance_error = key
@@ -1300,11 +1327,29 @@ class HedgedMartingaleBot:
 
     def run_forever(self, market_data: PublicMarketData, poll_sec: int = POLL_SEC, stop_event: Optional[threading.Event] = None) -> None:
         logger.debug("버전 %s / %s / 레버리지 %sx / %s", VERSION, self.long.mode_label, LEVERAGE, TIMEFRAME)
+        balance = 0.0
         try:
-            logger.info("계좌 잔고: %s USDT", f"{self.broker.get_balance():,.2f}")
+            balance = self.broker.get_balance()
+            logger.info("계좌 잔고: %s USDT", f"{balance:,.2f}")
         except Exception as e:
             logger.debug("잔고 조회 실패: %s", e)
-            logger.warning("잔고를 불러오지 못했습니다. API 키와 선물 지갑 잔고를 확인해주세요.")
+
+        # 키가 틀렸거나 권한이 없으면 아무리 기다려도 낫지 않는다. 그런데도 '매매 중'으로
+        # 계속 돌려두면, 화면은 정상인데 실제로는 한 건도 못 하는 상태가 오래 이어진다.
+        # 그래서 시작 단계에서 끊고, 무엇을 고쳐야 하는지 알려준다.
+        if balance <= 0 and getattr(self.broker, "last_error_kind", None) == "fatal":
+            self.notifier.send(
+                "⛔ 자동매매를 시작하지 못했습니다\n"
+                "   거래소 계정 설정을 고친 뒤 다시 시작해주세요."
+            )
+            logger.error("자동매매를 시작하지 못했습니다. 위 안내대로 고친 뒤 다시 시작해주세요.")
+            return
+
+        if balance <= 0:
+            logger.warning(
+                "잔고가 0으로 조회됩니다. 선물 지갑에 USDT가 있는지 확인해주세요. "
+                "(일시적인 조회 실패라면 그대로 두시면 자동으로 다시 시도합니다)"
+            )
         logger.info("자동매매를 시작했습니다. 매수/매도 기회를 찾는 중입니다...")
 
         error_notified = False
