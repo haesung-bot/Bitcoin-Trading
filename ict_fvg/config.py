@@ -148,3 +148,35 @@ class StrategyConfig:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def save(self, path: str) -> str:
+        """설정을 JSON으로 저장한다. 최적화로 찾은 설정을 재현하는 데 쓴다."""
+        import json
+        import os
+
+        directory = os.path.dirname(os.path.abspath(path))
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)
+        return path
+
+    @classmethod
+    def load(cls, path: str) -> "StrategyConfig":
+        """저장해둔 JSON 설정을 읽는다.
+
+        모르는 키가 있으면 조용히 무시하지 않고 에러를 낸다. 오타 난 설정이
+        기본값으로 대체된 채 실행되면 엉뚱한 결과를 보고 판단하게 되기 때문이다.
+        """
+        import json
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        unknown = set(data) - known
+        if unknown:
+            raise ValueError(
+                f"설정 파일에 알 수 없는 항목이 있습니다: {sorted(unknown)} (파일: {path})"
+            )
+        return cls(**data).validate()

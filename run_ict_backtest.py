@@ -90,12 +90,50 @@ def build_parser():
     output.add_argument("--scan-only", action="store_true",
                         help="백테스트 없이 현재 대기 중인 진입 자리만 출력")
 
+    parser.add_argument("--config", default=None,
+                        help="저장해둔 설정 JSON을 불러온다 (예: configs/best_btc_4h1h.json). "
+                             "이후 지정한 다른 옵션이 이 값을 덮어쓴다.")
     return parser
 
 
-def config_from_args(args) -> StrategyConfig:
+def config_from_args(args, parser) -> StrategyConfig:
     if args.long_only and args.short_only:
         raise SystemExit("❌ --long-only와 --short-only는 같이 쓸 수 없습니다.")
+
+    if args.config:
+        # 파일 설정을 기본으로 깔고, 명령줄에서 '직접 지정한' 옵션만 덮어쓴다.
+        # (기본값까지 덮어쓰면 파일 설정이 통째로 무시되므로 구분이 필요하다)
+        from dataclasses import replace
+
+        cfg = StrategyConfig.load(args.config)
+        print(f"⚙️  설정 파일 적용: {args.config}")
+
+        explicit = {}
+        defaults = parser.parse_args([])
+        overridable = {
+            "exchange": "exchange", "symbol": "symbol", "market_type": "market_type",
+            "htf": "htf", "ltf": "ltf", "min_rr": "min_rr", "sl_mode": "sl_mode",
+            "tp_target": "tp_target", "zone_mode": "zone_mode",
+            "min_fvg_atr": "min_fvg_atr", "setup_valid_bars": "setup_valid_bars",
+            "capital": "initial_capital", "risk_pct": "risk_pct",
+            "max_leverage": "max_leverage", "maker_fee": "maker_fee",
+            "taker_fee": "taker_fee", "slippage_bps": "slippage_bps",
+        }
+        for arg_name, field_name in overridable.items():
+            if getattr(args, arg_name) != getattr(defaults, arg_name):
+                explicit[field_name] = getattr(args, arg_name)
+        if args.no_sweep:
+            explicit["require_sweep"] = False
+        if args.no_mss:
+            explicit["require_mss"] = False
+        if args.long_only:
+            explicit["allow_short"] = False
+        if args.short_only:
+            explicit["allow_long"] = False
+
+        if explicit:
+            print(f"   명령줄로 덮어쓴 항목: {', '.join(sorted(explicit))}")
+        return replace(cfg, **explicit).validate()
 
     return StrategyConfig(
         exchange=args.exchange,
@@ -167,8 +205,9 @@ def print_setups(ltf, htf, cfg):
 
 
 def main():
-    args = build_parser().parse_args()
-    cfg = config_from_args(args)
+    parser = build_parser()
+    args = parser.parse_args()
+    cfg = config_from_args(args, parser)
 
     ltf, htf = load_data(args, cfg)
     validate_ohlcv(ltf, f"LTF({cfg.ltf})")
