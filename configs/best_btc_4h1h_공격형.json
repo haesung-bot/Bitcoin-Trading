@@ -16,7 +16,7 @@
   "setup_valid_bars": 40,
   "fvg_pre_mss_bars": 3,
   "min_range_atr": 1.0,
-  "zone_mode": "ce",
+  "zone_mode": "full",
   "min_rr": 1.5,
   "sl_mode": "wider",
   "sl_buffer_atr": 0.25,
