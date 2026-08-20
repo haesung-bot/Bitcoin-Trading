@@ -83,10 +83,40 @@ GRIDS = {
 }
 
 
-def expand_grid(grid: dict) -> list:
-    """dict of lists → 조합 리스트."""
+def expand_grid(grid: dict, dedupe: bool = True) -> list:
+    """dict of lists → 조합 리스트.
+
+    dedupe=True면 '결과가 같아질 수밖에 없는 조합'을 하나로 합친다.
+
+    ⚠️ 왜 필요한가: require_sweep=False면 사냥 필터 자체가 꺼지므로
+       require_mss / setup_valid_bars / fvg_pre_mss_bars 값이 무엇이든
+       결과가 완전히 같다. 이걸 그대로 두면
+         · 계산량이 배로 늘고
+         · 상위 목록이 똑같은 설정으로 도배돼 실제 후보를 못 보고
+         · '여러 조합이 다 좋게 나왔다'고 착각하게 된다
+    """
     keys = list(grid)
-    return [dict(zip(keys, values)) for values in itertools.product(*(grid[k] for k in keys))]
+    combos = [dict(zip(keys, values))
+              for values in itertools.product(*(grid[k] for k in keys))]
+    if not dedupe:
+        return combos
+
+    # 사냥 필터가 꺼진 조합은 관련 파라미터를 대표값으로 정규화해 중복을 제거한다
+    dead_when_no_sweep = ("require_mss", "setup_valid_bars", "fvg_pre_mss_bars")
+    seen = set()
+    unique = []
+    for combo in combos:
+        key_combo = dict(combo)
+        if key_combo.get("require_sweep") is False:
+            for name in dead_when_no_sweep:
+                if name in key_combo:
+                    key_combo[name] = None
+        signature = tuple(sorted((k, str(v)) for k, v in key_combo.items()))
+        if signature in seen:
+            continue
+        seen.add(signature)
+        unique.append(combo)
+    return unique
 
 
 def apply_params(base: StrategyConfig, params: dict) -> StrategyConfig:
