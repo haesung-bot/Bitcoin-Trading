@@ -1,0 +1,10 @@
+# ICT FVG 전략 관련 생성물
+.ohlcv_cache/          # 거래소에서 받아온 봉 데이터 캐시
+backtest_results/      # 백테스트 결과 CSV
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
