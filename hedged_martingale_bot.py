@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.0.9"
+VERSION = "1.1.0"
 
 import argparse
 import json
@@ -434,6 +434,17 @@ class Indicators:
         return 100 - (100 / (1 + rs))
 
     @staticmethod
+    def ema(closes: List[float], period: int) -> Optional[float]:
+        """마지막 값 기준 지수이동평균. 데이터가 기간보다 짧으면 None."""
+        if not closes or period <= 0 or len(closes) < period:
+            return None
+        k = 2.0 / (period + 1)
+        value = sum(closes[:period]) / period      # 첫 구간은 단순평균으로 시작
+        for c in closes[period:]:
+            value = c * k + value * (1 - k)
+        return value
+
+    @staticmethod
     def bollinger(
         closes: List[float], period: int = BB_PERIOD, mult: float = BB_STDDEV_MULT
     ) -> Optional[Tuple[float, float, float]]:
@@ -451,6 +462,13 @@ class Indicators:
 # 표시 방식을 이 플래그로 고른다. 기본값(True)은 배포용의 기존 표시를 그대로 유지한다.
 # 증거금 모드: "cross"(교차) 또는 "isolated"(격리).
 # 격리는 레버리지가 높을 때 봇의 하드손절보다 거래소 강제청산이 먼저 와서 위험하다.
+# 추세 필터: 0이면 사용 안 함. 값을 주면 그 기간의 EMA를 기준으로,
+# 추세를 거스르는 방향의 신규 진입(1차)을 막는다. 물타기·익절·손절은 그대로 동작한다.
+# 상승추세(가격 > EMA)면 숏 신규진입을 막고, 하락추세면 롱 신규진입을 막는다.
+# 추세장에서 반대편이 4단계까지 끌려가 하드손절되는 것을 막아주지만,
+# 박스권에서는 진입 기회가 줄어 수익도 함께 줄어든다.
+TREND_EMA_PERIOD = int(os.environ.get("TREND_EMA_PERIOD", "0"))
+
 MARGIN_MODE = os.environ.get("MARGIN_MODE", "cross")
 
 SHOW_QTY_DETAIL = True
@@ -551,7 +569,11 @@ class TelegramNotifier:
 class PublicMarketData:
     """실제 매매할 거래소와 동일한 곳에서 ccxt 공개 API로 캔들을 가져온다. API 키 불필요."""
 
-    def __init__(self, exchange_name: str = None, symbol: str = None, timeframe: str = TIMEFRAME, limit: int = 100):
+    def __init__(self, exchange_name: str = None, symbol: str = None, timeframe: str = TIMEFRAME,
+                 limit: int = None):
+        # 추세 필터를 켜면 EMA 기간만큼 과거 캔들이 더 필요하다.
+        if limit is None:
+            limit = max(100, TREND_EMA_PERIOD + 50) if TREND_EMA_PERIOD else 100
         exchange_name = exchange_name or EXCHANGE_NAME
         symbol = symbol or EXCHANGE_SYMBOLS.get(exchange_name, SYMBOL)
         exchange_cls = _resolve_exchange_class(exchange_name)
@@ -1029,11 +1051,23 @@ class MartingaleModule:
     def _in_cooldown(self, now: float) -> bool:
         return self.cooldown_until is not None and now < self.cooldown_until
 
-    def _entry_signal(self, price: float, rsi: float, bb: Tuple[float, float, float]) -> bool:
+    def _entry_signal(self, price: float, rsi: float, bb: Tuple[float, float, float],
+                      trend_ema: Optional[float] = None) -> bool:
         _, upper, lower = bb
         if self.side == Side.LONG:
-            return rsi <= RSI_LONG_TRIGGER or price <= lower
-        return rsi >= RSI_SHORT_TRIGGER or price >= upper
+            triggered = rsi <= RSI_LONG_TRIGGER or price <= lower
+        else:
+            triggered = rsi >= RSI_SHORT_TRIGGER or price >= upper
+        if not triggered:
+            return False
+        # 추세를 거스르는 방향이면 새로 들어가지 않는다. 이미 들고 있는 포지션은
+        # 물타기/익절/손절이 그대로 돌아가므로, 관리 중인 자리를 방치하지는 않는다.
+        if trend_ema:
+            if self.side == Side.SHORT and price > trend_ema:
+                return False    # 상승추세에서 숏 신규진입 금지
+            if self.side == Side.LONG and price < trend_ema:
+                return False    # 하락추세에서 롱 신규진입 금지
+        return True
 
     def _pnl_pct(self, price: float) -> float:
         if self.avg_price is None:
@@ -1047,7 +1081,8 @@ class MartingaleModule:
             return (price - self.avg_price) * self.total_qty
         return (self.avg_price - price) * self.total_qty
 
-    def on_tick(self, price: float, rsi: Optional[float], bb: Optional[Tuple[float, float, float]], now: Optional[float] = None) -> None:
+    def on_tick(self, price: float, rsi: Optional[float], bb: Optional[Tuple[float, float, float]],
+                now: Optional[float] = None, trend_ema: Optional[float] = None) -> None:
         now = time.time() if now is None else now
         if self.halted or rsi is None or bb is None:
             return
@@ -1061,7 +1096,7 @@ class MartingaleModule:
         if not self.in_position:
             if self._in_cooldown(now):
                 return
-            if self._entry_signal(price, rsi, bb):
+            if self._entry_signal(price, rsi, bb, trend_ema):
                 self._enter_initial(price)
             return
 
@@ -1318,8 +1353,9 @@ class HedgedMartingaleBot:
     def on_price(self, price: float, closes_window: List[float], now: Optional[float] = None) -> None:
         rsi = Indicators.rsi(closes_window)
         bb = Indicators.bollinger(closes_window)
-        self.long.on_tick(price, rsi, bb, now)
-        self.short.on_tick(price, rsi, bb, now)
+        trend_ema = Indicators.ema(closes_window, TREND_EMA_PERIOD) if TREND_EMA_PERIOD else None
+        self.long.on_tick(price, rsi, bb, now, trend_ema)
+        self.short.on_tick(price, rsi, bb, now, trend_ema)
         self._save_state()
         # 매매 판단이 끝난 뒤의 상태를 보여준다(진입/청산이 있었다면 그게 반영된 상태).
         if price is not None and price > 0:

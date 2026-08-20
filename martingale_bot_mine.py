@@ -301,10 +301,18 @@ class PersonalTradingGUI:
         tk.Label(config_frame, text="(평단가 대비 이만큼 불리하면 단계 무관 전량 손절)",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=4, column=2, sticky="w", padx=(8, 0))
 
+        self.trend_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(config_frame, text="추세 필터 (추세를 거스르는 방향은 신규 진입 안 함)",
+                       variable=self.trend_var, command=self._schedule_save).grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        tk.Label(config_frame,
+                 text="※ 추세장 하드손절을 막아주지만, 박스권에서는 진입이 줄어 수익도 줄어듭니다.",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=6, column=0, columnspan=3, sticky="w")
+
         self.verbose_var = tk.BooleanVar(value=True)
         tk.Checkbutton(config_frame, text="상세 로그 (진입 금액 계산식·주문 실행 내역까지 표시)",
                        variable=self.verbose_var, command=self._apply_log_level).grid(
-            row=5, column=0, columnspan=3, sticky="w", pady=(5, 0))
+            row=7, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
         # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
         for var in (self.api_key_var, self.api_secret_var, self.passphrase_var,
@@ -550,6 +558,8 @@ class PersonalTradingGUI:
                 var.set(str(value))
         if data.get("verbose") is not None:
             self.verbose_var.set(bool(data["verbose"]))
+        if data.get("trend_filter") is not None:
+            self.trend_var.set(bool(data["trend_filter"]))
 
     def _save_credentials(self, exchange_name: str = None) -> None:
         try:
@@ -576,6 +586,7 @@ class PersonalTradingGUI:
                 "tg_token": self.tg_token_var.get().strip(),
                 "tg_chat": self.tg_chat_var.get().strip(),
                 "verbose": bool(self.verbose_var.get()),
+                "trend_filter": bool(self.trend_var.get()),
             })
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f)
@@ -831,6 +842,7 @@ class PersonalTradingGUI:
 
         core.LEVERAGE = leverage
         core.INITIAL_MARGIN_PCT = pos_pct
+        core.TREND_EMA_PERIOD = 200 if self.trend_var.get() else 0
         core.TP_PCT = tp_pct
         core.STEP_TRIGGER_PCT = step_pct
         core.STOP_LOSS_PCT = sl_pct
