@@ -1,0 +1,16 @@
+# ICT FVG 전략 관련 생성물
+# ⚠️ gitignore는 줄 끝 인라인 주석(패턴 뒤의 #)을 지원하지 않는다.
+#    주석을 같은 줄에 쓰면 그 문장까지 패턴에 포함되어 아무것도 무시되지 않는다.
+
+# 거래소에서 받아온 봉 데이터 캐시
+.ohlcv_cache/
+
+# 백테스트 결과 CSV
+backtest_results/
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
