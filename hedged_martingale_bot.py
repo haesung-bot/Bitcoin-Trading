@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 import argparse
 import json
@@ -1381,9 +1381,13 @@ class HedgedMartingaleBot:
             return 0.0
         return (h.price - price) * h.qty if side == Side.LONG else (price - h.price) * h.qty
 
-    def _open_hedge(self, module) -> None:
-        """반대 방향으로 같은 수량을 열어 손실을 그 자리에 고정한다."""
-        price = module.fills[-1].price
+    def _open_hedge(self, module, price: float) -> None:
+        """반대 방향으로 같은 수량을 열어 손실을 그 자리에 고정한다.
+
+        진입가는 반드시 '지금 시세'여야 한다. 예전에는 마지막 체결가를 썼는데,
+        재시작 직후처럼 그 값이 현재가와 크게 벌어져 있으면 실제 체결은 현재가에
+        되면서 기록만 옛 가격으로 남아 고정 손익이 어긋났다.
+        """
         qty = module.total_qty
         opposite = Side.SHORT if module.side == Side.LONG else Side.LONG
         try:
@@ -1435,7 +1439,7 @@ class HedgedMartingaleBot:
                     self._close_hedge(module, price)
                     frozen.discard(module.side)
             elif module.in_position and module.step >= HEDGE_AT_STEP:
-                self._open_hedge(module)
+                self._open_hedge(module, price)
                 if module.side in self.hedges:
                     frozen.add(module.side)
         return frozen
