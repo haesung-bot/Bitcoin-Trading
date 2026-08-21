@@ -301,6 +301,14 @@ class PersonalTradingGUI:
         tk.Label(config_frame, text="(평단가 대비 이만큼 불리하면 단계 무관 전량 손절)",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=4, column=2, sticky="w", padx=(8, 0))
 
+        self.hedge_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(config_frame, text="3차 헷지 (3차 도달 시 반대 포지션으로 손실 고정)",
+                       variable=self.hedge_var, command=self._schedule_save).grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        tk.Label(config_frame,
+                 text="※ 평단가로 돌아오면 양쪽을 함께 정리합니다. 그때까지 그 방향은 새 매매를 쉽니다.",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=8, column=0, columnspan=3, sticky="w")
+
         self.trend_var = tk.BooleanVar(value=False)
         tk.Checkbutton(config_frame, text="추세 필터 (추세를 거스르는 방향은 신규 진입 안 함)",
                        variable=self.trend_var, command=self._schedule_save).grid(
@@ -312,7 +320,7 @@ class PersonalTradingGUI:
         self.verbose_var = tk.BooleanVar(value=True)
         tk.Checkbutton(config_frame, text="상세 로그 (진입 금액 계산식·주문 실행 내역까지 표시)",
                        variable=self.verbose_var, command=self._apply_log_level).grid(
-            row=7, column=0, columnspan=3, sticky="w", pady=(5, 0))
+            row=9, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
         # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
         for var in (self.api_key_var, self.api_secret_var, self.passphrase_var,
@@ -560,6 +568,8 @@ class PersonalTradingGUI:
             self.verbose_var.set(bool(data["verbose"]))
         if data.get("trend_filter") is not None:
             self.trend_var.set(bool(data["trend_filter"]))
+        if data.get("hedge3") is not None:
+            self.hedge_var.set(bool(data["hedge3"]))
 
     def _save_credentials(self, exchange_name: str = None) -> None:
         try:
@@ -587,6 +597,7 @@ class PersonalTradingGUI:
                 "tg_chat": self.tg_chat_var.get().strip(),
                 "verbose": bool(self.verbose_var.get()),
                 "trend_filter": bool(self.trend_var.get()),
+                "hedge3": bool(self.hedge_var.get()),
             })
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f)
@@ -843,6 +854,7 @@ class PersonalTradingGUI:
         core.LEVERAGE = leverage
         core.INITIAL_MARGIN_PCT = pos_pct
         core.TREND_EMA_PERIOD = 200 if self.trend_var.get() else 0
+        core.HEDGE_AT_STEP = 3 if self.hedge_var.get() else 0
         core.TP_PCT = tp_pct
         core.STEP_TRIGGER_PCT = step_pct
         core.STOP_LOSS_PCT = sl_pct

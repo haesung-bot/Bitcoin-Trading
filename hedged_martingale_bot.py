@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 import argparse
 import json
@@ -468,6 +468,13 @@ class Indicators:
 # 추세장에서 반대편이 4단계까지 끌려가 하드손절되는 것을 막아주지만,
 # 박스권에서는 진입 기회가 줄어 수익도 함께 줄어든다.
 TREND_EMA_PERIOD = int(os.environ.get("TREND_EMA_PERIOD", "0"))
+
+# 3차 헷지: 0이면 사용 안 함. N을 주면 그 단계에 도달했을 때 같은 수량의 반대 포지션을
+# 열어 손실을 그 자리에 고정한다. 가격이 원래 포지션의 평단가로 돌아오면 양쪽을 함께
+# 정리한다(시간 제한 없음). 4단계(8배 물량)를 태우지 않으므로 한 번의 손실이 크게 줄지만,
+# 헷지가 풀릴 때까지 그 방향은 새 매매를 하지 않는다.
+HEDGE_AT_STEP = int(os.environ.get("HEDGE_AT_STEP", "0"))
+
 
 MARGIN_MODE = os.environ.get("MARGIN_MODE", "cross")
 
@@ -1233,6 +1240,10 @@ class HedgedMartingaleBot:
         qty_provider = make_qty_provider(broker)
         self.long = MartingaleModule(Side.LONG, broker, notifier, qty_provider, mode_label, on_trade_closed)
         self.short = MartingaleModule(Side.SHORT, broker, notifier, qty_provider, mode_label, on_trade_closed)
+        # 헷지 물량: 보호 대상 방향 -> Fill(진입가, 수량).
+        # 거래소는 방향당 포지션이 하나뿐이라, 롱을 헷지한 숏은 숏 모듈의 포지션과 합쳐진다.
+        # 그래서 헷지 물량을 여기서 따로 들고 있다가 청산/동기화 때 빼주어야 수량이 맞는다.
+        self.hedges: dict = {}
         if self.state_path:
             self._load_state()
         # 상태 파일이 없거나 읽기에 실패해도 거래소 실포지션은 반드시 확인해야 한다.
@@ -1257,6 +1268,12 @@ class HedgedMartingaleBot:
             return
         self.long.load_state(data.get("long", {}))
         self.short.load_state(data.get("short", {}))
+        self.hedges = {}
+        for name, h in (data.get("hedges") or {}).items():
+            try:
+                self.hedges[Side(name)] = Fill(float(h["price"]), float(h["qty"]))
+            except Exception as e:
+                logger.debug("헷지 상태 복원 실패(%s): %s", name, e)
         if self.long.in_position or self.short.in_position:
             logger.debug(
                 "이전 매매 상태 복원 (LONG step=%d avg=%s / SHORT step=%d avg=%s)",
@@ -1278,6 +1295,11 @@ class HedgedMartingaleBot:
                 continue  # 조회 불가 → 저장된 상태 유지
             had = module.in_position
             actual_qty = pos["qty"]
+            # 반대 방향을 보호하려고 열어둔 헷지 물량은 이 모듈 것이 아니므로 빼고 본다.
+            opposite = Side.SHORT if module.side == Side.LONG else Side.LONG
+            hedge = self.hedges.get(opposite)
+            if hedge:
+                actual_qty = max(0.0, actual_qty - hedge.qty)
 
             # 저장된 상태와 거래소 수량이 사실상 같으면 저장된 상태를 신뢰한다.
             # 저장된 상태에는 실제 진입 단계가 그대로 들어 있어, 수량만 보고 단계를 되짚는
@@ -1316,7 +1338,9 @@ class HedgedMartingaleBot:
         tmp = self.state_path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"long": self.long.to_state(), "short": self.short.to_state()}, f)
+                json.dump({"long": self.long.to_state(), "short": self.short.to_state(),
+                           "hedges": {k.value: {"price": v.price, "qty": v.qty}
+                                      for k, v in self.hedges.items()}}, f)
                 f.flush()
                 os.fsync(f.fileno())
             if os.path.exists(self.state_path):
@@ -1350,12 +1374,84 @@ class HedgedMartingaleBot:
             self._side_status(self.long, price), self._side_status(self.short, price),
         )
 
+    def _hedge_pnl(self, side: Side, price: float) -> float:
+        """보호 대상이 side인 헷지의 현재 손익(헷지는 반대 방향 포지션이다)."""
+        h = self.hedges.get(side)
+        if not h:
+            return 0.0
+        return (h.price - price) * h.qty if side == Side.LONG else (price - h.price) * h.qty
+
+    def _open_hedge(self, module) -> None:
+        """반대 방향으로 같은 수량을 열어 손실을 그 자리에 고정한다."""
+        price = module.fills[-1].price
+        qty = module.total_qty
+        opposite = Side.SHORT if module.side == Side.LONG else Side.LONG
+        try:
+            self.broker.fill_order(opposite, True, qty, price)
+        except Exception as e:
+            logger.warning("헷지 진입에 실패했습니다: %s", e)
+            return
+        self.hedges[module.side] = Fill(price, qty)
+        side_ko = "롱" if module.side == Side.LONG else "숏"
+        locked = module._realized_pnl(price)
+        self.notifier.send(
+            f"🔒 {side_ko} 헷지 | 반대 포지션으로 손실을 고정했습니다\n"
+            f"   고정 손익 {locked:+,.2f} USDT | 평단 {module.avg_price:,.2f} 복귀 시 정리"
+        )
+
+    def _close_hedge(self, module, price: float) -> None:
+        """원래 포지션과 헷지를 함께 정리한다. 고정된 손익이 그대로 실현된다."""
+        h = self.hedges.get(module.side)
+        if not h:
+            return
+        opposite = Side.SHORT if module.side == Side.LONG else Side.LONG
+        pnl = module._realized_pnl(price) + self._hedge_pnl(module.side, price)
+        try:
+            self.broker.fill_order(module.side, False, module.total_qty, price)
+            self.broker.fill_order(opposite, False, h.qty, price)
+        except Exception as e:
+            logger.warning("헷지 정리에 실패했습니다: %s", e)
+            return
+        self.broker.apply_pnl(pnl)
+        module._record_trade(price, "헷지정리", pnl)
+        side_ko = "롱" if module.side == Side.LONG else "숏"
+        result = "수익" if pnl >= 0 else "손실"
+        self.notifier.send(f"🔓 {side_ko} 헷지 정리 | {result} {pnl:+,.2f} USDT | 가격 {price:,.2f}")
+        del self.hedges[module.side]
+        module._reset()
+
+    def _handle_hedges(self, price: float, now: Optional[float]) -> set:
+        """헷지 진입/해제를 처리하고, 이번 틱에 봇 로직을 건너뛸 방향을 돌려준다."""
+        frozen = set()
+        if not HEDGE_AT_STEP:
+            return frozen
+        for module in (self.long, self.short):
+            if module.side in self.hedges:
+                frozen.add(module.side)
+                # 가격이 평단가로 돌아오면 정리한다(시간 제한 없음).
+                back = (price >= module.avg_price if module.side == Side.LONG
+                        else price <= module.avg_price)
+                if back:
+                    self._close_hedge(module, price)
+                    frozen.discard(module.side)
+            elif module.in_position and module.step >= HEDGE_AT_STEP:
+                self._open_hedge(module)
+                if module.side in self.hedges:
+                    frozen.add(module.side)
+        return frozen
+
     def on_price(self, price: float, closes_window: List[float], now: Optional[float] = None) -> None:
         rsi = Indicators.rsi(closes_window)
         bb = Indicators.bollinger(closes_window)
         trend_ema = Indicators.ema(closes_window, TREND_EMA_PERIOD) if TREND_EMA_PERIOD else None
-        self.long.on_tick(price, rsi, bb, now, trend_ema)
-        self.short.on_tick(price, rsi, bb, now, trend_ema)
+        frozen = self._handle_hedges(price, now)
+        # 헷지가 걸린 방향은 손익이 고정되어 있으므로 물타기·익절·손절을 돌리지 않는다.
+        if self.long.side not in frozen:
+            self.long.on_tick(price, rsi, bb, now, trend_ema)
+        if self.short.side not in frozen:
+            self.short.on_tick(price, rsi, bb, now, trend_ema)
+        # 진입으로 헷지 조건이 새로 충족됐을 수 있어 한 번 더 확인한다.
+        self._handle_hedges(price, now)
         self._save_state()
         # 매매 판단이 끝난 뒤의 상태를 보여준다(진입/청산이 있었다면 그게 반영된 상태).
         if price is not None and price > 0:
