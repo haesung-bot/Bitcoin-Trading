@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 import argparse
 import json
@@ -474,6 +474,8 @@ TREND_EMA_PERIOD = int(os.environ.get("TREND_EMA_PERIOD", "0"))
 # 정리한다(시간 제한 없음). 4단계(8배 물량)를 태우지 않으므로 한 번의 손실이 크게 줄지만,
 # 헷지가 풀릴 때까지 그 방향은 새 매매를 하지 않는다.
 HEDGE_AT_STEP = int(os.environ.get("HEDGE_AT_STEP", "0"))
+# 헷지 주문이 실패했을 때 다시 시도하기까지 쉬는 시간(초).
+HEDGE_RETRY_SEC = int(os.environ.get("HEDGE_RETRY_SEC", "300"))
 
 
 MARGIN_MODE = os.environ.get("MARGIN_MODE", "cross")
@@ -1021,7 +1023,11 @@ class MartingaleModule:
         반환값: 실제 포지션이 있어 동기화했으면 True, 포지션이 없어 비웠으면 False.
         """
         if not actual_qty or actual_qty <= 0 or not entry_price:
+            # 쿨다운은 '언제까지 쉰다'는 시간 약속이라 포지션 유무와 무관하다.
+            # _reset이 지워버리면 익절/손절 직후 재시작했을 때 대기 없이 바로 재진입한다.
+            keep = self.cooldown_until
             self._reset()
+            self.cooldown_until = keep
             return False
         # 단계 추정: 누적 수량은 1단계 수량의 (2^step - 1)배이므로, 지금 기준 1단계 수량과의
         # 비율로 역산한다. (예전에는 '1단계 = 1계약'을 전제해 계약수의 비트길이로 계산했는데,
@@ -1244,6 +1250,8 @@ class HedgedMartingaleBot:
         # 거래소는 방향당 포지션이 하나뿐이라, 롱을 헷지한 숏은 숏 모듈의 포지션과 합쳐진다.
         # 그래서 헷지 물량을 여기서 따로 들고 있다가 청산/동기화 때 빼주어야 수량이 맞는다.
         self.hedges: dict = {}
+        self._hedge_retry_after: dict = {}   # 헷지 주문 실패 시 재시도 대기 시각
+        self._hedge_last_error: dict = {}    # 같은 사유 반복 안내 방지
         if self.state_path:
             self._load_state()
         # 상태 파일이 없거나 읽기에 실패해도 거래소 실포지션은 반드시 확인해야 한다.
@@ -1381,7 +1389,17 @@ class HedgedMartingaleBot:
             return 0.0
         return (h.price - price) * h.qty if side == Side.LONG else (price - h.price) * h.qty
 
-    def _open_hedge(self, module, price: float) -> None:
+    def _hedge_retry_ok(self, side, now: Optional[float]) -> bool:
+        """헷지 주문이 실패했을 때 곧바로 다시 던지지 않도록 잠시 쉰다.
+
+        증거금 부족처럼 바로 낫지 않는 사유면 조회할 때마다 거부 주문을 계속 보내게 되어,
+        거래소 요청 한도에 걸리거나 계정이 제한될 수 있다.
+        """
+        t = time.time() if now is None else now
+        until = self._hedge_retry_after.get(side)
+        return until is None or t >= until
+
+    def _open_hedge(self, module, price: float, now: Optional[float] = None) -> None:
         """반대 방향으로 같은 수량을 열어 손실을 그 자리에 고정한다.
 
         진입가는 반드시 '지금 시세'여야 한다. 예전에는 마지막 체결가를 썼는데,
@@ -1393,9 +1411,16 @@ class HedgedMartingaleBot:
         try:
             self.broker.fill_order(opposite, True, qty, price)
         except Exception as e:
-            logger.warning("헷지 진입에 실패했습니다: %s", e)
+            t = time.time() if now is None else now
+            self._hedge_retry_after[module.side] = t + HEDGE_RETRY_SEC
+            if self._hedge_last_error.get(module.side) != str(e):
+                self._hedge_last_error[module.side] = str(e)
+                logger.warning("헷지 진입에 실패했습니다: %s (%d초 뒤 다시 시도합니다)",
+                               e, HEDGE_RETRY_SEC)
             return
         self.hedges[module.side] = Fill(price, qty)
+        self._hedge_retry_after.pop(module.side, None)
+        self._hedge_last_error.pop(module.side, None)
         side_ko = "롱" if module.side == Side.LONG else "숏"
         locked = module._realized_pnl(price)
         self.notifier.send(
@@ -1439,7 +1464,9 @@ class HedgedMartingaleBot:
                     self._close_hedge(module, price)
                     frozen.discard(module.side)
             elif module.in_position and module.step >= HEDGE_AT_STEP:
-                self._open_hedge(module, price)
+                if not self._hedge_retry_ok(module.side, now):
+                    continue
+                self._open_hedge(module, price, now)
                 if module.side in self.hedges:
                     frozen.add(module.side)
         return frozen
@@ -1488,17 +1515,45 @@ class HedgedMartingaleBot:
             )
         logger.info("자동매매를 시작했습니다. 매수/매도 기회를 찾는 중입니다...")
 
-        error_notified = False
+        # 시세 조회 실패와 매매(주문) 실패는 원인도 조치도 다르므로 따로 안내한다.
+        # 예전에는 둘을 한 덩어리로 잡아서, 주문이 거부돼도 "시세를 불러오지 못했습니다"라고
+        # 나가 사용자가 엉뚱한 곳(네트워크)을 확인하게 됐다.
+        feed_notified = False
+        trade_notified = None
         while stop_event is None or not stop_event.is_set():
+            closes = None
             try:
                 closes = market_data.get_closes()
-                self.on_price(closes[-1], closes)
-                error_notified = False
+                feed_notified = False
             except Exception as e:
-                logger.debug("루프 오류: %s", e)
-                if not error_notified:  # 같은 오류가 반복될 때 화면을 도배하지 않도록 1회만 안내
+                logger.debug("시세 조회 오류: %s", e)
+                if not feed_notified:
                     logger.warning("일시적으로 시세를 불러오지 못했습니다. 자동으로 다시 시도합니다.")
-                    error_notified = True
+                    feed_notified = True
+            if closes:
+                try:
+                    self.on_price(closes[-1], closes)
+                    if trade_notified is not None:
+                        logger.info("매매 처리가 정상으로 돌아왔습니다.")
+                        trade_notified = None
+                except Exception as e:
+                    logger.debug("매매 처리 오류: %s", e)
+                    hint = None
+                    explain = getattr(self.broker, "explain_api_error", None)
+                    if explain:
+                        try:
+                            hint = explain(e)
+                        except Exception:
+                            hint = None
+                    msg = hint or str(e)
+                    if msg != trade_notified:   # 같은 사유 반복은 한 번만 안내
+                        trade_notified = msg
+                        if hint:
+                            logger.warning("주문을 처리하지 못했습니다. %s", hint)
+                        else:
+                            logger.warning(
+                                "주문을 처리하지 못했습니다: %s "
+                                "(거래소 최소 주문 금액·증거금·권한을 확인해주세요. 자동으로 다시 시도합니다)", e)
             if stop_event is not None:
                 if stop_event.wait(poll_sec):
                     break
