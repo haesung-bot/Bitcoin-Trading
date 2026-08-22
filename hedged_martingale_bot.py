@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 
 import argparse
 import json
@@ -666,6 +666,43 @@ class LiveBroker:
                 logger.debug("Hedge/Dual Mode 설정 실패: %s", e)
         self._setup_margin_mode(leverage)
 
+    @staticmethod
+    def safe_isolated_leverage(mmr: float = 0.005) -> float:
+        """격리 마진에서 하드손절이 강제청산보다 먼저 오려면 넘지 말아야 할 레버리지."""
+        return 1.0 / (1.0 - (1.0 - STOP_LOSS_PCT) * (1.0 - mmr))
+
+    def _isolated_warning(self, leverage: int) -> str:
+        limit = self.safe_isolated_leverage()
+        if leverage <= limit:
+            return (f"격리 마진입니다. 지금 레버리지({leverage}배)는 한도({limit:.0f}배) 안이라 "
+                    f"하드손절이 정상 작동합니다.")
+        return (f"⚠️ 격리 마진 + {leverage}배는 위험합니다. 이 조합은 봇의 하드손절(평단 -"
+                f"{STOP_LOSS_PCT*100:g}%)이 작동하기 전에 거래소 강제청산이 먼저 옵니다. "
+                f"교차(Cross)로 바꾸거나 레버리지를 {limit:.0f}배 이하로 낮춰주세요. "
+                f"(모드 변경은 포지션과 미체결 주문이 없을 때만 가능합니다)")
+
+    def read_margin_mode(self) -> Optional[str]:
+        """거래소에 실제로 걸려 있는 증거금 모드를 읽는다. 못 읽으면 None."""
+        try:
+            positions = self.exchange.fetch_positions([self.symbol])
+        except Exception as e:
+            logger.debug("증거금 모드 조회 실패: %s", e)
+            return None
+        for p in positions or []:
+            mm = p.get("marginMode") or p.get("marginType")
+            if mm:
+                mm = str(mm).lower()
+                return "cross" if "cross" in mm else "isolated"
+            info = p.get("info") or {}
+            # Gate.io는 포지션의 leverage가 "0"이면 교차 마진이다.
+            lv = info.get("leverage")
+            if lv is not None:
+                try:
+                    return "cross" if float(lv) == 0 else "isolated"
+                except (TypeError, ValueError):
+                    pass
+        return None
+
     def _setup_margin_mode(self, leverage: int) -> None:
         """증거금 모드(교차/격리)와 레버리지를 설정한다.
 
@@ -701,7 +738,22 @@ class LiveBroker:
             logger.debug("증거금 모드/레버리지 설정 실패: %s", e)
 
         if applied:
-            logger.info("증거금 모드: %s / 레버리지 %s배", ko, leverage)
+            actual = self.read_margin_mode()
+            if actual and actual != mode:
+                # 설정 호출은 통과했는데 계좌는 여전히 다른 모드인 경우가 있다.
+                # (포지션/미체결이 남아 있으면 거래소가 조용히 무시하기도 한다)
+                logger.warning(
+                    "증거금 모드를 %s로 바꾸지 못했습니다. 계좌는 지금 %s 입니다. %s",
+                    ko, "교차(Cross)" if actual == "cross" else "격리(Isolated)",
+                    self._isolated_warning(leverage) if actual == "isolated" else
+                    "거래소에서 직접 확인해주세요.",
+                )
+            else:
+                shown = actual or mode
+                logger.info("증거금 모드: %s / 레버리지 %s배",
+                            "교차(Cross)" if shown == "cross" else "격리(Isolated)", leverage)
+                if shown == "isolated":
+                    logger.warning("%s", self._isolated_warning(leverage))
         elif setup_error is not None and self.explain_api_error(setup_error):
             # 키가 틀렸거나 IP가 막힌 경우다. '포지션 때문'이라고 잘못 안내하면 안 된다.
             logger.warning("증거금 모드/레버리지를 설정하지 못했습니다. %s",
