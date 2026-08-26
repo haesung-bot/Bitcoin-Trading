@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.2.3"
+VERSION = "1.3.0"
 
 import argparse
 import json
@@ -1360,6 +1360,14 @@ class HedgedMartingaleBot:
             hedge = self.hedges.get(opposite)
             if hedge:
                 actual_qty = max(0.0, actual_qty - hedge.qty)
+
+            # 주문 최소 단위보다 작은 잔량(먼지)은 없는 것으로 본다.
+            # 헷지 물량을 빼면 부동소수점 오차로 1e-17 같은 값이 남을 수 있는데, 이걸
+            # 포지션으로 취급하면 수량이 0에 가까운 '유령 1차'가 만들어져 그 방향이
+            # 익절도 손절도 못 하고 새 진입까지 막힌 채로 굳어버린다.
+            dust = pos.get("contract_size") or 0.0
+            if actual_qty <= max(dust, 1e-12):
+                actual_qty = 0.0
 
             # 저장된 상태와 거래소 수량이 사실상 같으면 저장된 상태를 신뢰한다.
             # 저장된 상태에는 실제 진입 단계가 그대로 들어 있어, 수량만 보고 단계를 되짚는

@@ -301,32 +301,40 @@ class PersonalTradingGUI:
         tk.Label(config_frame, text="(평단가 대비 이만큼 불리하면 단계 무관 전량 손절)",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=4, column=2, sticky="w", padx=(8, 0))
 
+        tk.Label(config_frame, text="최대 물타기 단계:").grid(row=5, column=0, sticky="w")
+        self.max_steps_var = tk.StringVar(value=str(core.MAX_STEPS))
+        tk.Spinbox(config_frame, from_=1, to=4, textvariable=self.max_steps_var,
+                   width=16, command=self._schedule_save).grid(row=5, column=1, sticky="w", pady=5)
+        tk.Label(config_frame,
+                 text="(여기까지만 물타기하고 더 안 감. 3으로 두면 4차 없이 3차에서 손절)",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=5, column=2, sticky="w", padx=(8, 0))
+
         self.hedge_var = tk.BooleanVar(value=False)
         tk.Checkbutton(config_frame, text="3차 헷지 (3차 도달 시 반대 포지션으로 손실 고정)",
                        variable=self.hedge_var, command=self._schedule_save).grid(
-            row=7, column=0, columnspan=2, sticky="w", pady=(5, 0))
+            row=9, column=0, columnspan=2, sticky="w", pady=(5, 0))
         tk.Label(config_frame,
                  text="※ 평단가로 돌아오면 양쪽을 함께 정리합니다. 그때까지 그 방향은 새 매매를 쉽니다.",
-                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=8, column=0, columnspan=3, sticky="w")
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=10, column=0, columnspan=3, sticky="w")
 
         self.trend_var = tk.BooleanVar(value=False)
         tk.Checkbutton(config_frame, text="추세 필터 (추세를 거스르는 방향은 신규 진입 안 함)",
                        variable=self.trend_var, command=self._schedule_save).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(5, 0))
+            row=7, column=0, columnspan=2, sticky="w", pady=(5, 0))
         tk.Label(config_frame,
                  text="※ 추세장 하드손절을 막아주지만, 박스권에서는 진입이 줄어 수익도 줄어듭니다.",
-                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=6, column=0, columnspan=3, sticky="w")
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=8, column=0, columnspan=3, sticky="w")
 
         self.verbose_var = tk.BooleanVar(value=True)
         tk.Checkbutton(config_frame, text="상세 로그 (진입 금액 계산식·주문 실행 내역까지 표시)",
                        variable=self.verbose_var, command=self._apply_log_level).grid(
-            row=9, column=0, columnspan=3, sticky="w", pady=(5, 0))
+            row=11, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
         # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
         for var in (self.api_key_var, self.api_secret_var, self.passphrase_var,
                     self.tg_token_var, self.tg_chat_var,
                     self.leverage_var, self.pos_pct_var,
-                    self.tp_pct_var, self.step_pct_var, self.sl_pct_var):
+                    self.tp_pct_var, self.step_pct_var, self.sl_pct_var, self.max_steps_var):
             var.trace_add("write", self._schedule_save)
 
         # 3. 제어 버튼
@@ -560,7 +568,8 @@ class PersonalTradingGUI:
                          ("step_pct", self.step_pct_var),
                          ("sl_pct", self.sl_pct_var),
                          ("tg_token", self.tg_token_var),
-                         ("tg_chat", self.tg_chat_var)):
+                         ("tg_chat", self.tg_chat_var),
+                         ("max_steps", self.max_steps_var)):
             value = data.get(key)
             if value not in (None, ""):
                 var.set(str(value))
@@ -598,6 +607,7 @@ class PersonalTradingGUI:
                 "verbose": bool(self.verbose_var.get()),
                 "trend_filter": bool(self.trend_var.get()),
                 "hedge3": bool(self.hedge_var.get()),
+                "max_steps": self.max_steps_var.get().strip(),
             })
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f)
@@ -853,8 +863,25 @@ class PersonalTradingGUI:
 
         core.LEVERAGE = leverage
         core.INITIAL_MARGIN_PCT = pos_pct
+        try:
+            max_steps = int(float(self.max_steps_var.get().strip()))
+            if not 1 <= max_steps <= 4:
+                raise ValueError("1~4 사이여야 합니다")
+        except ValueError as e:
+            messagebox.showerror("입력 오류", f"최대 물타기 단계는 1~4 사이의 정수여야 합니다.\n({e})")
+            return
+        # 물타기 단계가 늘수록 증거금이 2배씩 커진다. 양방향 동시에 최대 단계까지 갈 수 있는지 확인.
+        need = pos_pct * (2 ** max_steps - 1)
+        if need > 1.0:
+            messagebox.showerror(
+                "입력 오류",
+                f"포지션 크기 {pos_pct*100:g}%로 {max_steps}단계까지 물타기하면 "
+                f"증거금이 잔고의 {need*100:.0f}%가 되어 부족해집니다.\n"
+                f"포지션 크기를 {100/(2**max_steps-1):.2f}% 이하로 낮추거나 단계를 줄이세요.")
+            return
+        core.MAX_STEPS = max_steps
         core.TREND_EMA_PERIOD = 200 if self.trend_var.get() else 0
-        core.HEDGE_AT_STEP = 3 if self.hedge_var.get() else 0
+        core.HEDGE_AT_STEP = min(3, max_steps) if self.hedge_var.get() else 0
         core.TP_PCT = tp_pct
         core.STEP_TRIGGER_PCT = step_pct
         core.STOP_LOSS_PCT = sl_pct
