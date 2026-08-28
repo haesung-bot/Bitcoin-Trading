@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 import argparse
 import json
@@ -479,6 +479,8 @@ HEDGE_RETRY_SEC = int(os.environ.get("HEDGE_RETRY_SEC", "300"))
 
 
 MARGIN_MODE = os.environ.get("MARGIN_MODE", "cross")
+# 증거금 모드 전환이 거부됐을 때(대개 포지션/미체결이 남아 있을 때) 다시 시도하기까지 쉬는 시간(초).
+MARGIN_RETRY_SEC = int(os.environ.get("MARGIN_RETRY_SEC", "60"))
 
 SHOW_QTY_DETAIL = True
 
@@ -647,6 +649,8 @@ class LiveBroker:
                 raise RuntimeError(f"{exchange_name}는 Passphrase가 필요합니다. 입력해주세요.")
             config["password"] = passphrase
         self.exchange = exchange_cls(config)
+        self.margin_mode_ok = False                      # 요청한 증거금 모드가 실제로 걸렸는지
+        self._margin_retry_after = 0.0                   # 다음 재시도 가능 시각
         self._last_balance_error: Optional[str] = None   # 같은 오류 반복 안내를 막기 위해 기억
         self.last_error_kind: Optional[str] = None       # "fatal"이면 스스로 낫지 않는 설정 문제
         self.symbol = symbol or EXCHANGE_SYMBOLS.get(exchange_name, SYMBOL)
@@ -703,7 +707,27 @@ class LiveBroker:
                     pass
         return None
 
-    def _setup_margin_mode(self, leverage: int) -> None:
+    def ensure_margin_mode(self, leverage: int, now: Optional[float] = None) -> bool:
+        """증거금 모드가 아직 원하는 값이 아니면 다시 걸어본다.
+
+        포지션이나 미체결 주문이 있으면 거래소가 변경을 거부하므로, 시작할 때 한 번
+        실패하면 그대로 굳어버린다. 포지션이 정리된 뒤 이 함수가 다시 불리면 그때
+        자동으로 전환된다. 호출 쪽에서 '지금 포지션이 없다'는 것을 확인하고 부른다.
+        """
+        if self.margin_mode_ok:
+            return True
+        t = time.time() if now is None else now
+        if t < self._margin_retry_after:
+            return False
+        self._margin_retry_after = t + MARGIN_RETRY_SEC
+        before = self.margin_mode_ok
+        self._setup_margin_mode(leverage, retry=True)
+        if self.margin_mode_ok and not before:
+            logger.info("증거금 모드를 이제 %s로 바꿨습니다.",
+                        "교차(Cross)" if MARGIN_MODE != "isolated" else "격리(Isolated)")
+        return self.margin_mode_ok
+
+    def _setup_margin_mode(self, leverage: int, retry: bool = False) -> None:
         """증거금 모드(교차/격리)와 레버리지를 설정한다.
 
         격리(Isolated)는 그 포지션에 배정된 증거금(명목/레버리지)만 손실을 받아낸다.
@@ -739,6 +763,9 @@ class LiveBroker:
 
         if applied:
             actual = self.read_margin_mode()
+            # 읽어서 확인된 경우에만 확정으로 본다. 못 읽으면 일단 됐다고 보되,
+            # 확인이 안 됐으므로 나중에 포지션이 비면 한 번 더 시도한다.
+            self.margin_mode_ok = (actual == mode) if actual else False
             if actual and actual != mode:
                 # 설정 호출은 통과했는데 계좌는 여전히 다른 모드인 경우가 있다.
                 # (포지션/미체결이 남아 있으면 거래소가 조용히 무시하기도 한다)
@@ -748,12 +775,16 @@ class LiveBroker:
                     self._isolated_warning(leverage) if actual == "isolated" else
                     "거래소에서 직접 확인해주세요.",
                 )
+            elif retry:
+                pass    # 재시도 중에는 성공했을 때만 알린다(위 ensure_margin_mode에서 처리)
             else:
                 shown = actual or mode
                 logger.info("증거금 모드: %s / 레버리지 %s배",
                             "교차(Cross)" if shown == "cross" else "격리(Isolated)", leverage)
                 if shown == "isolated":
                     logger.warning("%s", self._isolated_warning(leverage))
+        elif retry:
+            logger.debug("증거금 모드 재시도 실패: %s", setup_error)
         elif setup_error is not None and self.explain_api_error(setup_error):
             # 키가 틀렸거나 IP가 막힌 경우다. '포지션 때문'이라고 잘못 안내하면 안 된다.
             logger.warning("증거금 모드/레버리지를 설정하지 못했습니다. %s",
@@ -761,11 +792,18 @@ class LiveBroker:
         else:
             # 포지션이 열려 있으면 거래소가 변경을 거부한다. 이 경우 계좌에 이미 걸려 있는
             # 모드로 매매되므로, 사용자가 직접 확인할 수 있게 경고로 남긴다.
+            actual = self.read_margin_mode()
+            now_ko = ("교차(Cross)" if actual == "cross" else
+                      "격리(Isolated)" if actual == "isolated" else "확인 불가")
             logger.warning(
-                "증거금 모드/레버리지를 설정하지 못했습니다. 거래소 계좌에 이미 설정된 값으로 매매합니다. "
-                "(대개 포지션이나 미체결 주문이 있으면 변경이 거부됩니다) 거래소에서 %s / %s배 인지 확인해주세요.",
-                ko, leverage,
+                "증거금 모드/레버리지를 설정하지 못했습니다. 계좌는 지금 %s 입니다. "
+                "(대개 포지션이나 미체결 주문이 있으면 변경이 거부됩니다. 포지션이 정리되면 자동으로 다시 시도합니다)",
+                now_ko,
             )
+            if actual == "isolated":
+                logger.warning("%s", self._isolated_warning(leverage))
+            elif actual is None:
+                logger.warning("거래소에서 %s / %s배 인지 직접 확인해주세요.", ko, leverage)
 
     def _read_usdt_balance(self, params: dict) -> float:
         bal = self.exchange.fetch_balance(params)
@@ -1543,6 +1581,15 @@ class HedgedMartingaleBot:
             self.short.on_tick(price, rsi, bb, now, trend_ema)
         # 진입으로 헷지 조건이 새로 충족됐을 수 있어 한 번 더 확인한다.
         self._handle_hedges(price, now)
+        # 포지션이 하나도 없을 때만 증거금 모드를 다시 걸어본다. 시작 시점에 포지션이
+        # 남아 있어 거부됐더라도, 그게 정리되면 여기서 자동으로 교차로 바뀐다.
+        if not (self.long.in_position or self.short.in_position or self.hedges):
+            ensure = getattr(self.broker, "ensure_margin_mode", None)
+            if ensure:
+                try:
+                    ensure(LEVERAGE, now)
+                except Exception as e:
+                    logger.debug("증거금 모드 재시도 중 오류: %s", e)
         self._save_state()
         # 매매 판단이 끝난 뒤의 상태를 보여준다(진입/청산이 있었다면 그게 반영된 상태).
         if price is not None and price > 0:
