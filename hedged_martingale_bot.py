@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 
 import argparse
 import json
@@ -482,6 +482,14 @@ MARGIN_MODE = os.environ.get("MARGIN_MODE", "cross")
 # 증거금 모드 전환이 거부됐을 때(대개 포지션/미체결이 남아 있을 때) 다시 시도하기까지 쉬는 시간(초).
 MARGIN_RETRY_SEC = int(os.environ.get("MARGIN_RETRY_SEC", "60"))
 
+# 격리 마진인데 레버리지가 안전 한도를 넘으면 매매를 시작하지 않는다.
+# 그 조합에서는 봇의 하드손절이 작동하기 전에 거래소 강제청산이 먼저 오기 때문이다.
+ALLOW_UNSAFE_ISOLATED = os.environ.get("ALLOW_UNSAFE_ISOLATED", "").lower() in ("1", "true", "yes")
+
+# 로그를 최소한으로 줄인다(배포용). 보유 수량·평균단가처럼 매매 방식이 드러나는 값을 빼고
+# 금액·가격·손익만 남긴다.
+MINIMAL_LOG = False
+
 SHOW_QTY_DETAIL = True
 
 # 텔레그램으로 나가는 알림에 잔고를 넣을지. False면 화면 로그에는 잔고가 계속 보이고
@@ -779,8 +787,11 @@ class LiveBroker:
                 pass    # 재시도 중에는 성공했을 때만 알린다(위 ensure_margin_mode에서 처리)
             else:
                 shown = actual or mode
-                logger.info("증거금 모드: %s / 레버리지 %s배",
-                            "교차(Cross)" if shown == "cross" else "격리(Isolated)", leverage)
+                shown_ko = "교차(Cross)" if shown == "cross" else "격리(Isolated)"
+                if MINIMAL_LOG:
+                    logger.info("증거금 모드: %s", shown_ko)
+                else:
+                    logger.info("증거금 모드: %s / 레버리지 %s배", shown_ko, leverage)
                 if shown == "isolated":
                     logger.warning("%s", self._isolated_warning(leverage))
         elif retry:
@@ -1307,6 +1318,11 @@ class MartingaleModule:
 
     def _notify_entry(self, price: float, qty: float) -> None:
         amount_usdt = qty * price
+        if MINIMAL_LOG:
+            # 매매 방식이 드러나지 않도록 금액과 가격만 남긴다.
+            self.notifier.send(
+                f"▶ {self._side_ko} 진입 | 금액 {amount_usdt:,.2f} USDT | 가격 {price:,.2f}")
+            return
         if SHOW_QTY_DETAIL:
             # 배포용: 진입 단계(차수)를 드러내지 않고 보유 수량만 보여준다.
             head = f"▶ {self._side_ko} 진입"
@@ -1321,6 +1337,10 @@ class MartingaleModule:
 
     def _notify_close(self, price: float, reason: str, pnl: float) -> None:
         result = "수익" if pnl >= 0 else "손실"
+        if MINIMAL_LOG:
+            self.notifier.send(
+                f"■ {self._side_ko} 청산 | {result} {pnl:+,.2f} USDT | 가격 {price:,.2f}")
+            return
         head = f"■ {self._side_ko} 청산 | {result} {pnl:+,.2f} USDT | 가격 {price:,.2f}"
         full = f"{head}\n   잔고 {self.broker.get_balance():,.2f} USDT"
         self.notifier.send(full, head if not TELEGRAM_SHOW_BALANCE else None)
@@ -1467,6 +1487,8 @@ class HedgedMartingaleBot:
         """하트비트에 넣을 방향별 한 줄 상태."""
         if not module.in_position:
             return "대기"
+        if MINIMAL_LOG:
+            return "보유"
         pnl_pct = module._pnl_pct(price) * 100
         if SHOW_QTY_DETAIL:
             # 배포용: 진입 차수를 드러내지 않는다.
@@ -1607,6 +1629,24 @@ class HedgedMartingaleBot:
         # 키가 틀렸거나 권한이 없으면 아무리 기다려도 낫지 않는다. 그런데도 '매매 중'으로
         # 계속 돌려두면, 화면은 정상인데 실제로는 한 건도 못 하는 상태가 오래 이어진다.
         # 그래서 시작 단계에서 끊고, 무엇을 고쳐야 하는지 알려준다.
+        # 격리 마진 + 높은 레버리지는 봇의 손절이 작동하기 전에 거래소가 먼저 청산한다.
+        # 이 상태로 돌리면 손실을 통제할 수 없으므로 아예 시작하지 않는다.
+        read = getattr(self.broker, "read_margin_mode", None)
+        safe_lim = getattr(self.broker, "safe_isolated_leverage", None)
+        if read and safe_lim and not getattr(self.broker, "margin_mode_ok", False):
+            try:
+                actual = read()
+            except Exception:
+                actual = None
+            if actual == "isolated" and LEVERAGE > safe_lim() and not ALLOW_UNSAFE_ISOLATED:
+                msg = (f"격리(Isolated) 마진에서 레버리지 {LEVERAGE}배는 손실을 통제할 수 없어 "
+                       f"시작하지 않았습니다. 거래소에서 교차(Cross)로 바꾸거나 레버리지를 "
+                       f"{safe_lim():.0f}배 이하로 낮춰주세요. "
+                       f"(포지션과 미체결 주문이 없어야 모드를 바꿀 수 있습니다)")
+                logger.error("%s", msg)
+                self.notifier.send("⛔ 자동매매를 시작하지 못했습니다\n   " + msg)
+                return
+
         if balance <= 0 and getattr(self.broker, "last_error_kind", None) == "fatal":
             self.notifier.send(
                 "⛔ 자동매매를 시작하지 못했습니다\n"

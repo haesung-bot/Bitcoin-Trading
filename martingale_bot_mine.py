@@ -42,6 +42,9 @@ core.SHOW_QTY_DETAIL = False
 # 그룹방으로도 알림을 보내므로 텔레그램 메시지에서는 잔고를 뺀다(화면 로그에는 계속 표시).
 core.TELEGRAM_SHOW_BALANCE = False
 
+# 개인용은 상세 로그를 그대로 본다(최소 로그는 배포용 전용).
+core.MINIMAL_LOG = False
+
 # 창 높이를 내용 전체 높이의 몇 배로 열지(나머지는 스크롤로 본다).
 WINDOW_HEIGHT_RATIO = 0.7
 

@@ -27,10 +27,52 @@ import hedged_martingale_bot as core
 
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".hedged_martingale_bot_gui_config.json")
 
+# 배포용은 매매 설정을 사용자가 건드리지 않는다. 아래 값으로 고정한다.
+FIXED_LEVERAGE = 75
+FIXED_POS_PCT = 0.01        # 잔고의 1%
+FIXED_MAX_STEPS = 3         # 3차까지만 진입하고 더 물타지 않는다
+
+# 매매 방식이 드러나지 않도록 로그를 최소한으로 남긴다.
+core.MINIMAL_LOG = True
+core.SHOW_QTY_DETAIL = False
+
+
+def _fixed_caution_text() -> str:
+    """주의사항에서 '설정값을 고르는 법' 부분을 고정값 설명으로 바꾼다.
+
+    배포용은 레버리지·포지션 크기를 사용자가 바꿀 수 없으므로, 원문의 추천값 안내는
+    맞지 않는다. 대신 지금 고정된 값이 무엇을 뜻하는지 그대로 알린다.
+    """
+    text = core.CAUTION_TEXT
+    start = text.find("【3.")
+    end = text.find("【4.")
+    if start < 0 or end < 0 or end <= start:
+        return text
+    fixed = (
+        f"【3. 이 프로그램의 고정 설정 — 레버리지 {FIXED_LEVERAGE}배 / "
+        f"1회 진입 {FIXED_POS_PCT*100:g}%】\n\n"
+        f"· 이 프로그램은 레버리지 {FIXED_LEVERAGE}배로 거래합니다.\n"
+        f"  레버리지가 높을수록 청산가가 현재가에 가까워집니다. 그래서 반드시\n"
+        f"  교차(Cross) 증거금 모드에서만 동작하도록 만들어져 있고, 시작할 때\n"
+        f"  자동으로 교차로 맞춥니다. 격리(Isolated)로 남아 있으면 매매를\n"
+        f"  시작하지 않습니다. 손실이 통제되지 않기 때문입니다.\n\n"
+        f"· 한 번에 들어가는 금액은 잔고의 {FIXED_POS_PCT*100:g}%입니다.\n"
+        f"  가격이 불리하게 가면 정해진 간격마다 금액을 늘려 최대 3번까지만\n"
+        f"  나눠서 들어갑니다. 그 뒤에도 회복되지 않으면 손절하고 처음부터\n"
+        f"  다시 시작합니다. 무한정 물타기하지 않습니다.\n\n"
+        f"· 그래도 위험이 사라지는 것은 아닙니다.\n"
+        f"  3번째까지 들어간 상태에서 급락·급등이 나오면 손절선에 닿기 전에\n"
+        f"  거래소가 먼저 강제 청산할 수 있습니다. 이 경우 손실이 훨씬 커집니다.\n\n"
+        f"· 처음에는 반드시 소액으로 며칠 돌려보시고, 동작을 충분히 확인한 뒤\n"
+        f"  금액을 늘리세요.\n\n\n"
+    )
+    return text[:start] + fixed + text[end:]
+
 
 # 이 화면 파일이 엔진 파일에서 반드시 필요로 하는 것들. 하나라도 없으면 버전이 어긋난 것이다.
 REQUIRED_CORE_ATTRS = ("HEARTBEAT_MARK", "martingale_ladder", "SHOW_QTY_DETAIL",
-                       "TELEGRAM_SHOW_BALANCE", "parse_chat_ids")
+                       "TELEGRAM_SHOW_BALANCE", "parse_chat_ids", "MINIMAL_LOG",
+                       "MAX_STEPS", "ALLOW_UNSAFE_ISOLATED")
 
 def check_core_compatible(root=None) -> bool:
     """엔진 파일(hedged_martingale_bot.py)이 이 화면 파일과 맞는 버전인지 확인한다.
@@ -170,34 +212,30 @@ class HedgedMartingaleGUI:
 
         self._update_passphrase_visibility()
 
-        # 2. 상세설정
-        config_frame = tk.LabelFrame(parent, text=" 상세설정 ", padx=10, pady=10)
+        # 2. 매매 설정(고정) — 사용자가 바꿀 수 없다
+        config_frame = tk.LabelFrame(parent, text=" 매매 설정 ", padx=10, pady=10)
         config_frame.pack(fill="x", padx=15, pady=5)
 
-        tk.Label(config_frame, text="레버리지 (1~100배):").grid(row=0, column=0, sticky="w")
-        self.leverage_var = tk.StringVar(value=f"{core.LEVERAGE:g}")
-        tk.Spinbox(config_frame, from_=1, to=100, increment=1, width=15,
-                   textvariable=self.leverage_var).grid(row=0, column=1, sticky="w", pady=5)
-        lev_hint = tk.Frame(config_frame)
-        lev_hint.grid(row=0, column=2, sticky="w", padx=(8, 0))
-        tk.Label(lev_hint, text="※ 10배 추천", fg="#c0392b",
-                 font=("맑은 고딕", 9, "bold")).pack(side="left")
-        tk.Label(lev_hint, text="(시작할 때 거래소 계좌에 설정됩니다)",
-                 fg="#7f8c8d", font=("맑은 고딕", 8)).pack(side="left", padx=(6, 0))
+        tk.Label(config_frame, text="이 프로그램은 아래 설정으로 고정되어 있습니다.",
+                 font=("맑은 고딕", 9, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+        rows = (("레버리지", f"{FIXED_LEVERAGE}배"),
+                ("1회 진입 크기", f"잔고의 {FIXED_POS_PCT*100:g}%"),
+                ("증거금 모드", "교차(Cross) — 시작할 때 자동 설정"))
+        for r, (k, v) in enumerate(rows, start=1):
+            tk.Label(config_frame, text=f"  · {k}").grid(row=r, column=0, sticky="w")
+            tk.Label(config_frame, text=v, font=("맑은 고딕", 9, "bold"),
+                     fg="#2c3e50").grid(row=r, column=1, sticky="w", padx=(10, 0))
+        tk.Label(config_frame,
+                 text="※ 시작 전에 '⚠️ 주의사항'을 반드시 읽어주세요. 손실이 발생할 수 있습니다.",
+                 fg="#c0392b", font=("맑은 고딕", 8)).grid(
+            row=len(rows) + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
-        tk.Label(config_frame, text="포지션 크기 (%):").grid(row=1, column=0, sticky="w")
-        self.pos_pct_var = tk.StringVar(value=f"{core.INITIAL_MARGIN_PCT * 100:g}")
-        tk.Entry(config_frame, textvariable=self.pos_pct_var, width=18).grid(row=1, column=1, sticky="w", pady=5)
-        pos_hint = tk.Frame(config_frame)
-        pos_hint.grid(row=1, column=2, sticky="w", padx=(8, 0))
-        tk.Label(pos_hint, text="※ 2% 추천", fg="#c0392b",
-                 font=("맑은 고딕", 9, "bold")).pack(side="left")
-        tk.Label(pos_hint, text="(예: 잔고 100 × 10배 × 2% ≈ 20 USDT 진입)",
-                 fg="#7f8c8d", font=("맑은 고딕", 8)).pack(side="left", padx=(6, 0))
+        # 화면에는 없지만 저장/시작 로직이 참조하는 값들(고정)
+        self.leverage_var = tk.StringVar(value=str(FIXED_LEVERAGE))
+        self.pos_pct_var = tk.StringVar(value=f"{FIXED_POS_PCT*100:g}")
 
-        # 모든 입력값은 타이핑할 때마다 자동 저장되어, 프로그램을 강제 종료해도 다음 실행 시 그대로 남는다.
-        for var in (self.api_key_var, self.api_secret_var, self.passphrase_var,
-                    self.leverage_var, self.pos_pct_var):
+        # API 키는 타이핑할 때마다 자동 저장되어, 강제 종료해도 다음 실행 시 남는다.
+        for var in (self.api_key_var, self.api_secret_var, self.passphrase_var):
             var.trace_add("write", self._schedule_save)
 
         # 3. 제어 버튼
@@ -384,7 +422,7 @@ class HedgedMartingaleGUI:
                       padx=8, pady=8)
         txt.pack(side="left", fill="both", expand=True)
         sb.config(command=txt.yview)
-        txt.insert("1.0", core.CAUTION_TEXT)
+        txt.insert("1.0", _fixed_caution_text())
         txt.config(state="disabled")
 
         tk.Button(win, text="확인했습니다", command=win.destroy, width=16,
@@ -415,10 +453,6 @@ class HedgedMartingaleGUI:
 
         if data.get("save_keys") is not None:
             self.save_keys_var.set(bool(data["save_keys"]))
-        if data.get("leverage"):
-            self.leverage_var.set(str(data["leverage"]))
-        if data.get("pos_pct"):
-            self.pos_pct_var.set(str(data["pos_pct"]))
 
     def _save_credentials(self, exchange_name: str = None) -> None:
         try:
@@ -437,8 +471,6 @@ class HedgedMartingaleGUI:
                 "last_exchange": name,
                 "exchanges": exchanges,
                 "save_keys": bool(self.save_keys_var.get()),
-                "leverage": self.leverage_var.get().strip(),
-                "pos_pct": self.pos_pct_var.get().strip(),
             })
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f)
@@ -495,13 +527,6 @@ class HedgedMartingaleGUI:
         self._log(f"{name}용으로 저장된 API 키를 삭제했습니다.")
         messagebox.showinfo("완료", f"{name}용으로 저장된 API 키를 삭제했습니다.")
 
-    def _parse_pct(self, text: str, name: str) -> float:
-        """'2', '0.3' 같은 퍼센트 입력을 소수(0.02, 0.003)로 변환. 잘못된 값이면 ValueError."""
-        value = float(text.strip())
-        if value <= 0:
-            raise ValueError(f"{name}는 0보다 커야 합니다.")
-        return value / 100.0
-
     # ───────────── 시작/정지 ─────────────
     def _on_start_clicked(self) -> None:
         exchange_name = self.exchange_var.get()
@@ -521,37 +546,16 @@ class HedgedMartingaleGUI:
             )
             return
 
-        # 전략 값 검증 및 적용
-        try:
-            leverage = int(float(self.leverage_var.get().strip()))
-            if not 1 <= leverage <= 100:
-                raise ValueError("레버리지는 1~100 사이여야 합니다.")
-        except ValueError as e:
-            messagebox.showerror("입력 오류", f"레버리지는 1~100 사이의 숫자여야 합니다.\n({e})")
-            return
-
-        try:
-            pos_pct = self._parse_pct(self.pos_pct_var.get(), "포지션 크기 %")
-        except ValueError as e:
-            messagebox.showerror("입력 오류", f"포지션 크기 %는 0보다 큰 숫자여야 합니다.\n({e})")
-            return
-
-        # 4단계까지 물타기하면 1차의 15배 명목가치가 필요하므로, 증거금이 잔고를 넘지 않는지 확인
-        max_margin_ratio = pos_pct * (2 ** core.MAX_STEPS - 1)
-        if max_margin_ratio > 1.0:
-            messagebox.showerror(
-                "입력 오류",
-                f"포지션 크기 {pos_pct*100:g}%로는 {core.MAX_STEPS}단계까지 물타기할 때 "
-                f"증거금이 잔고의 {max_margin_ratio*100:.0f}%가 되어 부족해집니다.\n"
-                f"포지션 크기를 {100/(2**core.MAX_STEPS-1):.2f}% 이하로 낮추세요.",
-            )
-            return
-
-        core.LEVERAGE = leverage
-        core.INITIAL_MARGIN_PCT = pos_pct
+        # 배포용은 설정이 고정이므로 사용자 입력 검증이 필요 없다.
+        core.LEVERAGE = FIXED_LEVERAGE
+        core.INITIAL_MARGIN_PCT = FIXED_POS_PCT
+        core.MAX_STEPS = FIXED_MAX_STEPS
+        core.MINIMAL_LOG = True
+        core.SHOW_QTY_DETAIL = False
+        core.HEDGE_AT_STEP = 0      # 3차에서 멈추고 하드손절 후 재진입
 
         self._save_credentials()
-        self._log(f"설정 | {exchange_name} | 레버리지 {leverage}배 | 포지션 크기 {pos_pct*100:g}%")
+        self._log(f"{exchange_name} 연결을 시작합니다.")
 
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
