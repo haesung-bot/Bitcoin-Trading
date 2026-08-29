@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 import argparse
 import json
@@ -788,10 +788,8 @@ class LiveBroker:
             else:
                 shown = actual or mode
                 shown_ko = "교차(Cross)" if shown == "cross" else "격리(Isolated)"
-                if MINIMAL_LOG:
-                    logger.info("증거금 모드: %s", shown_ko)
-                else:
-                    logger.info("증거금 모드: %s / 레버리지 %s배", shown_ko, leverage)
+                logger.info("증거금 모드: %s / 레버리지 %s배 / 진입금액 %s%%",
+                            shown_ko, leverage, f"{INITIAL_MARGIN_PCT * 100:g}")
                 if shown == "isolated":
                     logger.warning("%s", self._isolated_warning(leverage))
         elif retry:
