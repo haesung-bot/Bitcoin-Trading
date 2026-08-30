@@ -28,8 +28,8 @@ import hedged_martingale_bot as core
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".hedged_martingale_bot_gui_config.json")
 
 # 배포용은 매매 설정을 사용자가 건드리지 않는다. 아래 값으로 고정한다.
-FIXED_LEVERAGE = 75
-FIXED_POS_PCT = 0.01        # 잔고의 1%
+FIXED_LEVERAGE = 25
+FIXED_POS_PCT = 0.03        # 잔고의 3%
 FIXED_MAX_STEPS = 3         # 3차까지만 진입하고 더 물타지 않는다
 
 # 매매 방식이 드러나지 않도록 로그를 최소한으로 남긴다.
