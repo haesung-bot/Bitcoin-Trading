@@ -28,7 +28,6 @@ for name in ("showerror", "showinfo", "showwarning"):
 messagebox.askyesno = lambda *a, **k: False
 
 root = tk.Tk()
-root.withdraw()
 app = my.MyBotGUI(root)
 root.update_idletasks()
 
@@ -68,6 +67,70 @@ idx_tg = order.index("텔레그램 알림")
 idx_log = order.index("실시간 매매 로그 및 상태")
 check("매매 설정 아래에 배치", idx_cfg < idx_tg, f"{idx_cfg} < {idx_tg}")
 check("로그창 위에 배치", idx_tg < idx_log, f"{idx_tg} < {idx_log}")
+
+section("A-2. 입력칸 붙여넣기 / 오른쪽 클릭")
+
+
+def find_entries(w, out=None):
+    out = [] if out is None else out
+    for c in w.winfo_children():
+        if isinstance(c, tk.Entry):
+            out.append(c)
+        find_entries(c, out)
+    return out
+
+
+all_entries = find_entries(root)
+check("모든 입력칸에 Ctrl 바인딩", all(
+    "<Control-Key>" in e.bind() for e in all_entries), f"{len(all_entries)}개")
+check("모든 입력칸에 오른쪽 클릭 바인딩", all(
+    "<Button-3>" in e.bind() for e in all_entries))
+
+chat = [e for e in all_entries if e.cget("textvariable") == str(app.tg_chat_var)][0]
+root.clipboard_clear()
+root.clipboard_append("-1001234567890")
+chat.delete(0, "end")
+chat.focus_force()
+root.update()
+chat.event_generate("<Control-KeyPress>", keysym="v", keycode=86)
+root.update()
+eq("Ctrl+V(영문) 붙여넣기", app.tg_chat_var.get(), "-1001234567890")
+
+chat.delete(0, "end")
+root.update()
+# 한글 입력 상태에서는 keysym이 'v'로 오지 않는다. keycode로도 처리돼야 한다.
+chat.event_generate("<Control-KeyPress>", keysym="Hangul", keycode=86)
+root.update()
+eq("Ctrl+V(한글 상태) 붙여넣기", app.tg_chat_var.get(), "-1001234567890")
+
+chat.delete(0, "end")
+root.update()
+chat.event_generate("<Control-KeyPress>", keysym="v", keycode=86)
+root.update()
+eq("두 번 붙지 않음", app.tg_chat_var.get(), "-1001234567890")
+
+chat.delete(0, "end")
+for ch in "555":
+    chat.event_generate("<KeyPress>", keysym=ch)
+root.update()
+eq("직접 타이핑", app.tg_chat_var.get(), "555")
+
+root.clipboard_clear()
+root.clipboard_append("777")
+chat.event_generate("<Control-KeyPress>", keysym="a", keycode=65)
+root.update()
+chat.event_generate("<Control-KeyPress>", keysym="v", keycode=86)
+root.update()
+eq("전체선택 후 덮어쓰기", app.tg_chat_var.get(), "777")
+
+chat.delete(0, "end")
+root.update()
+
+section("A-3. 창 크기가 화면을 넘지 않는가")
+mw, mh = root.minsize()
+check("세로 최소크기가 화면보다 작음", mh <= root.winfo_screenheight() * 0.88, f"minsize 세로 {mh}")
+check("창 높이가 화면 안", root.winfo_height() <= root.winfo_screenheight() * 0.9,
+      f"{root.winfo_height()} / 화면 {root.winfo_screenheight()}")
 
 section("B. 배포용과 똑같이 고정돼 있는가")
 check("레버리지 입력칸 없음", "레버리지 (1~100배):" not in j)

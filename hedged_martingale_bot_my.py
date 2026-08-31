@@ -76,6 +76,107 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
         for var in (self.tg_token_var, self.tg_chat_var):
             var.trace_add("write", self._schedule_save)
 
+        self._install_entry_bindings(self.root)
+
+    # ───────────── 입력칸 보조 ─────────────
+    def _install_entry_bindings(self, widget) -> None:
+        """모든 입력칸에 복사/붙여넣기와 오른쪽 클릭 메뉴를 직접 달아준다.
+
+        한글 입력 상태(한/영 키가 '한')에서는 Ctrl+V의 keysym이 'v'로 오지 않아서,
+        tkinter가 기본으로 걸어둔 붙여넣기 단축키가 아예 동작하지 않는다. Chat ID처럼
+        긴 숫자를 복사해서 넣어야 하는 칸에서 이게 특히 문제가 된다.
+        그래서 keysym 대신 keycode로도 판별해서 직접 처리한다.
+        """
+        for child in widget.winfo_children():
+            if isinstance(child, tk.Entry):
+                child.bind("<Control-KeyPress>", self._on_entry_ctrl_key)
+                child.bind("<Button-3>", self._show_entry_menu)
+            self._install_entry_bindings(child)
+
+    @staticmethod
+    def _on_entry_ctrl_key(event):
+        # 윈도우 기준 keycode: A=65, C=67, V=86, X=88 (한/영 상태와 무관하게 같은 값)
+        key = event.keysym.lower()
+        code = event.keycode
+        entry = event.widget
+        try:
+            if key == "v" or code == 86:
+                try:
+                    entry.delete("sel.first", "sel.last")
+                except tk.TclError:
+                    pass                      # 선택된 글자가 없으면 지울 것도 없다
+                entry.insert("insert", entry.clipboard_get())
+            elif key == "c" or code == 67:
+                entry.clipboard_clear()
+                entry.clipboard_append(entry.selection_get())
+            elif key == "x" or code == 88:
+                entry.clipboard_clear()
+                entry.clipboard_append(entry.selection_get())
+                entry.delete("sel.first", "sel.last")
+            elif key == "a" or code == 65:
+                entry.select_range(0, "end")
+                entry.icursor("end")
+            else:
+                return None
+        except tk.TclError:
+            pass                              # 클립보드가 비었거나 선택이 없는 경우
+        return "break"                        # 기본 동작까지 실행돼 두 번 붙는 것을 막는다
+
+    def _show_entry_menu(self, event):
+        entry = event.widget
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="붙여넣기",
+                         command=lambda: self._entry_action(entry, "paste"))
+        menu.add_command(label="복사", command=lambda: self._entry_action(entry, "copy"))
+        menu.add_command(label="잘라내기", command=lambda: self._entry_action(entry, "cut"))
+        menu.add_separator()
+        menu.add_command(label="전체 선택", command=lambda: self._entry_action(entry, "all"))
+        menu.add_command(label="지우기", command=lambda: entry.delete(0, "end"))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    @staticmethod
+    def _entry_action(entry, what):
+        try:
+            if what == "paste":
+                try:
+                    entry.delete("sel.first", "sel.last")
+                except tk.TclError:
+                    pass
+                entry.insert("insert", entry.clipboard_get())
+            elif what == "copy":
+                entry.clipboard_clear()
+                entry.clipboard_append(entry.selection_get())
+            elif what == "cut":
+                entry.clipboard_clear()
+                entry.clipboard_append(entry.selection_get())
+                entry.delete("sel.first", "sel.last")
+            elif what == "all":
+                entry.select_range(0, "end")
+                entry.icursor("end")
+        except tk.TclError:
+            pass
+
+    def _fit_window_to_content(self) -> None:
+        """내용에 맞추되, 화면 높이를 넘지 않게 한다.
+
+        배포용 화면에 텔레그램 칸이 더해지면서 창이 978px까지 커졌다. 원래 코드는 그
+        높이를 minsize로 못박아버려서, 화면이 그보다 작은 노트북에서는 아래쪽(시작 버튼,
+        로그창)이 잘린 채 줄일 수도 없게 된다.
+        """
+        super()._fit_window_to_content()
+        self.root.update_idletasks()
+        want_w = self.root.winfo_reqwidth()
+        want_h = self.root.winfo_reqheight()
+        max_h = int(self.root.winfo_screenheight() * 0.88)   # 작업표시줄/제목표시줄 여유
+        max_w = int(self.root.winfo_screenwidth() * 0.95)
+        w, h = min(want_w, max_w), min(want_h, max_h)
+        self.root.minsize(min(want_w, max_w), min(560, h))   # 세로는 얼마든지 줄일 수 있게
+        self.root.geometry(f"{w}x{h}")
+
     # ───────────── 저장 / 복원 ─────────────
     # 배포용 설정 파일에 텔레그램 항목만 얹는다. 거래소별 API 키는 배포용 코드가 그대로 처리한다.
     def _save_credentials(self, exchange_name: str = None) -> None:
