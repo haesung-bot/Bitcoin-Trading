@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.5.2"
+VERSION = "1.6.0"
 
 import argparse
 import json
@@ -390,6 +390,9 @@ TP_PCT = 0.003                  # 평단가 대비 0.3% 순방향 이동 시 익
 STOP_LOSS_PCT = 0.025           # 평단가 대비 2.5% 역방향 이동 시 전량 하드손절(물타기 간격과 독립)
 MAX_STEPS = 4                   # 1배 -> 2배 -> 4배 -> 8배
 COOLDOWN_SEC = 180              # 청산 후 재진입 대기 3분
+# 하드손절 뒤에는 더 길게 쉰다. 손절이 났다는 것은 그 방향으로 흐름이 강하다는 뜻이라,
+# 바로 다시 들어가면 같은 흐름에 또 맞는다. 그 방향만 쉬고 반대쪽은 계속 매매한다.
+STOP_LOSS_COOLDOWN_SEC = int(os.environ.get("STOP_LOSS_COOLDOWN_SEC", "3600"))
 MAX_CONSECUTIVE_SL = int(os.environ.get("MAX_CONSECUTIVE_SL", "3"))  # 연속 손절 N회 시 해당 방향 자동 정지
 RSI_PERIOD = 14
 RSI_LONG_TRIGGER = 40.0
@@ -1349,10 +1352,22 @@ class MartingaleModule:
         self._record_trade(price, "손절", pnl)
         self._reset()
         self.consecutive_sl += 1
-        self.cooldown_until = (time.time() if now is None else now) + COOLDOWN_SEC
+        rest = max(COOLDOWN_SEC, STOP_LOSS_COOLDOWN_SEC)
+        self.cooldown_until = (time.time() if now is None else now) + rest
+        self._notify_rest(rest)
         if self.consecutive_sl >= MAX_CONSECUTIVE_SL:
             self.halted = True
             self._notify_halt()
+
+    def _notify_rest(self, seconds: float) -> None:
+        """손절 뒤 얼마나 쉬는지 알린다(기본 쿨다운과 같으면 굳이 알리지 않는다)."""
+        if seconds <= COOLDOWN_SEC:
+            return
+        if seconds >= 3600 and seconds % 3600 == 0:
+            span = f"{int(seconds // 3600)}시간"
+        else:
+            span = f"{int(round(seconds / 60))}분"
+        self.notifier.send(f"⏸ {self._side_ko}은 {span} 쉬었다가 다시 매매합니다.")
 
     # ───── 사용자 화면용 알림 ─────
     # 배포용이므로 내부 전략(진입 조건, 단계별 물타기, 쿨다운, 안전장치 기준 등)이 드러나지 않도록

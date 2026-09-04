@@ -125,7 +125,8 @@ check("손절로 잔고 감소", ex.balance < bal0, f"{bal0:.2f}→{ex.balance:.
 b, ex = bot_with()
 L = b.long
 for _ in range(3):
-    CLOCK.advance(200)
+    # 손절 뒤에는 1시간을 쉬므로, 다음 진입을 보려면 그만큼 시계를 넘겨야 한다.
+    CLOCK.advance(max(200, core.STOP_LOSS_COOLDOWN_SEC + 1))
     L.on_tick(60000.0, 10.0, (60000, 61000, 59000), CLOCK.time())
     if not L.in_position:
         break
