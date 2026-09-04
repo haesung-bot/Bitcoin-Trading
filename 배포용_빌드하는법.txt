@@ -104,7 +104,7 @@ python -m PyInstaller --onefile --noconsole --name HedgedMartingaleBot --collect
 
   배포 전에 직접 확인할 것
     1) HedgedMartingaleBot.exe 를 더블클릭해서 창이 뜨는지
-    2) 로그 첫 줄의 버전 번호가 최신인지 (v1.4.3)
+    2) 로그 첫 줄의 버전 번호가 최신인지 (v1.5.2)
     3) 소액으로 하루 돌려보고 로그가 정상으로 찍히는지
 
 

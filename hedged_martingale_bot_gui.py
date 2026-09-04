@@ -32,6 +32,12 @@ FIXED_LEVERAGE = 25
 FIXED_POS_PCT = 0.03        # 잔고의 3%
 FIXED_MAX_STEPS = 3         # 3차까지만 진입하고 더 물타지 않는다
 
+# 야간 정지 시간대(한국 시간). 변동성이 큰 이 시간에는 새 매매를 하지 않는다.
+# 마지막 차수는 물량이 커서 보호를 놓을 수 없으므로 그 차수만 손절을 남겨둔다.
+FIXED_QUIET_START = 21
+FIXED_QUIET_END = 1
+FIXED_QUIET_TZ = 9          # 서버가 UTC여도 한국 시간으로 판단한다
+
 # 매매 방식이 드러나지 않도록 로그를 최소한으로 남긴다.
 core.MINIMAL_LOG = True
 core.SHOW_QTY_DETAIL = False
@@ -63,6 +69,10 @@ def _fixed_caution_text() -> str:
         f"· 그래도 위험이 사라지는 것은 아닙니다.\n"
         f"  3번째까지 들어간 상태에서 급락·급등이 나오면 손절선에 닿기 전에\n"
         f"  거래소가 먼저 강제 청산할 수 있습니다. 이 경우 손실이 훨씬 커집니다.\n\n"
+        f"· 밤 {FIXED_QUIET_START}시부터 새벽 {FIXED_QUIET_END}시까지(한국 시간)는 새 매매를 하지 않습니다.\n"
+        f"  이 시간대는 시세가 크게 흔들려 손실이 나기 쉬워서, 새로 들어가지 않고\n"
+        f"  가지고 있는 것만 관리합니다. 수익 구간이 오면 그때는 정리하고 나옵니다.\n"
+        f"  서버가 해외에 있어도 한국 시간을 기준으로 판단합니다.\n\n"
         f"· 처음에는 반드시 소액으로 며칠 돌려보시고, 동작을 충분히 확인한 뒤\n"
         f"  금액을 늘리세요.\n\n\n"
     )
@@ -220,7 +230,9 @@ class HedgedMartingaleGUI:
                  font=("맑은 고딕", 9, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
         rows = (("레버리지", f"{FIXED_LEVERAGE}배"),
                 ("1회 진입 크기", f"잔고의 {FIXED_POS_PCT*100:g}%"),
-                ("증거금 모드", "교차(Cross) — 시작할 때 자동 설정"))
+                ("증거금 모드", "교차(Cross) — 시작할 때 자동 설정"),
+                ("야간 정지", f"{FIXED_QUIET_START:02d}:00~{FIXED_QUIET_END:02d}:00 "
+                            f"(한국 시간) 새 매매 안 함"))
         for r, (k, v) in enumerate(rows, start=1):
             tk.Label(config_frame, text=f"  · {k}").grid(row=r, column=0, sticky="w")
             tk.Label(config_frame, text=v, font=("맑은 고딕", 9, "bold"),
@@ -553,6 +565,10 @@ class HedgedMartingaleGUI:
         core.MINIMAL_LOG = True
         core.SHOW_QTY_DETAIL = False
         core.HEDGE_AT_STEP = 0      # 3차에서 멈추고 하드손절 후 재진입
+        core.QUIET_START_HOUR = FIXED_QUIET_START
+        core.QUIET_END_HOUR = FIXED_QUIET_END
+        core.QUIET_TZ_OFFSET = FIXED_QUIET_TZ
+        core.QUIET_STOP_LOSS_STEP = FIXED_MAX_STEPS
 
         self._save_credentials()
         self._log(f"{exchange_name} 연결을 시작합니다.")

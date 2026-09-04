@@ -40,6 +40,7 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
     def __init__(self, root: tk.Tk):
         self._tg_token = ""     # 시작 버튼을 누른 순간의 값(매매 스레드에서 쓴다)
         self._tg_chat = ""
+        self._quiet_cfg = (QUIET_START_DEFAULT, QUIET_END_DEFAULT, dist.FIXED_MAX_STEPS)
         super().__init__(root)
         self.root.title("비트코인 선물 자동매매 (내 계정용)")
 
@@ -378,19 +379,20 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
                 messagebox.showerror("입력 오류",
                                      "시작 시각과 종료 시각이 같습니다. 다르게 넣어주세요.")
                 return
-            core.QUIET_START_HOUR, core.QUIET_END_HOUR = start, end
             # 1차·2차는 버티고, 마지막 차수(3차)에서는 정지 시간대라도 손절한다.
-            core.QUIET_STOP_LOSS_STEP = dist.FIXED_MAX_STEPS
+            self._quiet_cfg = (start, end, dist.FIXED_MAX_STEPS)
         else:
-            core.QUIET_START_HOUR = core.QUIET_END_HOUR = -1
-            core.QUIET_STOP_LOSS_STEP = 0
-        core.QUIET_TZ_OFFSET = QUIET_TZ
+            self._quiet_cfg = (-1, -1, 0)
 
         super()._on_start_clicked()
 
     def _run_bot(self, exchange_name: str, api_key: str, api_secret: str, passphrase: str) -> None:
         core.TELEGRAM_BOT_TOKEN = self._tg_token
         core.TELEGRAM_CHAT_ID = self._tg_chat
+        # 배포용 시작 처리가 자기 고정값으로 정지 시간대를 덮어쓰므로, 그 뒤에 다시 건다.
+        # (배포용은 21~1시 고정이지만 이 화면에서는 끄거나 시간을 바꿀 수 있어야 한다)
+        core.QUIET_START_HOUR, core.QUIET_END_HOUR, core.QUIET_STOP_LOSS_STEP = self._quiet_cfg
+        core.QUIET_TZ_OFFSET = QUIET_TZ
         if core.quiet_hours_enabled():
             self._log(f"야간 정지 시간대 {core.quiet_hours_label()} (한국 시간) — "
                       f"신규 진입·물타기를 멈추고, 손절은 {core.QUIET_STOP_LOSS_STEP}차부터만 겁니다.")
