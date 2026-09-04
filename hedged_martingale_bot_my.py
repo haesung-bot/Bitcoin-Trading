@@ -28,6 +28,11 @@ import requests
 import hedged_martingale_bot as core
 import hedged_martingale_bot_gui as dist
 
+# 야간 정지 시간대 기본값(한국 시간). 21시에 들어가서 다음날 1시에 풀린다.
+QUIET_START_DEFAULT = 21
+QUIET_END_DEFAULT = 1
+QUIET_TZ = 9                # 한국 표준시. 서버가 UTC여도 이 값으로 보정한다.
+
 
 class MyBotGUI(dist.HedgedMartingaleGUI):
     """배포용 화면 + 텔레그램 알림 입력칸."""
@@ -73,7 +78,38 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
         tk.Label(tg_frame, text="※ 비워두면 텔레그램 없이 화면 로그로만 동작합니다.",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=3, column=0, columnspan=3, sticky="w")
 
-        for var in (self.tg_token_var, self.tg_chat_var):
+        quiet_frame = tk.LabelFrame(self.root, text=" 야간 정지 시간대 ", padx=10, pady=10)
+        if len(children) > 2:
+            quiet_frame.pack(fill="x", padx=15, pady=5, before=children[2])
+        else:
+            quiet_frame.pack(fill="x", padx=15, pady=5)
+
+        self.quiet_on_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(quiet_frame, variable=self.quiet_on_var,
+                       text="이 시간에는 새 매매를 하지 않는다").grid(row=0, column=0, columnspan=6, sticky="w")
+
+        tk.Label(quiet_frame, text="시작").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.quiet_start_var = tk.StringVar(value=str(QUIET_START_DEFAULT))
+        tk.Spinbox(quiet_frame, from_=0, to=23, width=5, textvariable=self.quiet_start_var).grid(
+            row=1, column=1, sticky="w", padx=(4, 0), pady=(4, 0))
+        tk.Label(quiet_frame, text="시  ~  종료").grid(row=1, column=2, sticky="w", pady=(4, 0))
+        self.quiet_end_var = tk.StringVar(value=str(QUIET_END_DEFAULT))
+        tk.Spinbox(quiet_frame, from_=0, to=23, width=5, textvariable=self.quiet_end_var).grid(
+            row=1, column=3, sticky="w", padx=(4, 0), pady=(4, 0))
+        tk.Label(quiet_frame, text="시  (한국 시간)").grid(row=1, column=4, sticky="w", pady=(4, 0))
+
+        tk.Label(quiet_frame,
+                 text="※ 이 시간에는 신규 진입·물타기·손절을 모두 멈추고 버팁니다."
+                      "  수익 구간이 오면 익절은 그대로 합니다.",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=2, column=0, columnspan=6, sticky="w", pady=(6, 0))
+        tk.Label(quiet_frame,
+                 text="※ 손절이 멈추므로, 이 시간에 시세가 크게 밀리면 손실이 -2.5%보다 커질 수 있습니다.",
+                 fg="#c0392b", font=("맑은 고딕", 8)).grid(row=3, column=0, columnspan=6, sticky="w")
+        tk.Label(quiet_frame, text="※ 서버가 해외(UTC)에 있어도 한국 시간 기준으로 판단합니다.",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=4, column=0, columnspan=6, sticky="w")
+
+        for var in (self.tg_token_var, self.tg_chat_var,
+                    self.quiet_on_var, self.quiet_start_var, self.quiet_end_var):
             var.trace_add("write", self._schedule_save)
 
         self._install_entry_bindings(self.root)
@@ -185,6 +221,9 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
             data = self._read_config()
             data["tg_token"] = self.tg_token_var.get().strip()
             data["tg_chat"] = self.tg_chat_var.get().strip()
+            data["quiet_on"] = bool(self.quiet_on_var.get())
+            data["quiet_start"] = self.quiet_start_var.get().strip()
+            data["quiet_end"] = self.quiet_end_var.get().strip()
             with open(dist.CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f)
         except Exception as e:
@@ -200,6 +239,12 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
         if exchange_name is None:
             self.tg_token_var.set(data.get("tg_token", ""))
             self.tg_chat_var.set(data.get("tg_chat", ""))
+            if data.get("quiet_on") is not None:
+                self.quiet_on_var.set(bool(data["quiet_on"]))
+            if data.get("quiet_start"):
+                self.quiet_start_var.set(str(data["quiet_start"]))
+            if data.get("quiet_end"):
+                self.quiet_end_var.set(str(data["quiet_end"]))
 
     # ───────────── 텔레그램 도우미 ─────────────
     def _discover_chats(self) -> None:
@@ -314,11 +359,34 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
         # tkinter 변수는 매매 스레드에서 읽으면 안 되므로, 시작하는 순간 값을 복사해둔다.
         self._tg_token = self.tg_token_var.get().strip()
         self._tg_chat = self.tg_chat_var.get().strip()
+
+        if self.quiet_on_var.get():
+            try:
+                start = int(float(self.quiet_start_var.get().strip()))
+                end = int(float(self.quiet_end_var.get().strip()))
+            except ValueError:
+                messagebox.showerror("입력 오류", "야간 정지 시간은 0~23 사이의 숫자로 넣어주세요.")
+                return
+            if not (0 <= start <= 23 and 0 <= end <= 23):
+                messagebox.showerror("입력 오류", "야간 정지 시간은 0~23 사이여야 합니다.")
+                return
+            if start == end:
+                messagebox.showerror("입력 오류",
+                                     "시작 시각과 종료 시각이 같습니다. 다르게 넣어주세요.")
+                return
+            core.QUIET_START_HOUR, core.QUIET_END_HOUR = start, end
+        else:
+            core.QUIET_START_HOUR = core.QUIET_END_HOUR = -1
+        core.QUIET_TZ_OFFSET = QUIET_TZ
+
         super()._on_start_clicked()
 
     def _run_bot(self, exchange_name: str, api_key: str, api_secret: str, passphrase: str) -> None:
         core.TELEGRAM_BOT_TOKEN = self._tg_token
         core.TELEGRAM_CHAT_ID = self._tg_chat
+        if core.quiet_hours_enabled():
+            self._log(f"야간 정지 시간대 {core.quiet_hours_label()} (한국 시간) — "
+                      f"이 시간에는 신규 진입·물타기·손절을 멈춥니다.")
         if self._tg_token and self._tg_chat:
             self._log(f"텔레그램 알림 켜짐 ({len(core.parse_chat_ids(self._tg_chat))}곳)")
         else:

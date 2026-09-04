@@ -44,6 +44,9 @@ else:
     check("격리는 시작 차단 대상", core.ALLOW_UNSAFE_ISOLATED is False,
           f"{LEV}배 > 한도 {safe_iso:.1f}배 → 격리면 시작 안 함")
 
+check("배포용은 야간 정지 기능을 쓰지 않음",
+      "QUIET_START_HOUR" not in GUI_SRC, "배포용 화면이 정지 시간대를 건드리면 안 된다")
+
 section("B. 로그가 전략을 드러내지 않는가")
 buf = []
 

@@ -132,6 +132,14 @@ check("세로 최소크기가 화면보다 작음", mh <= root.winfo_screenheigh
 check("창 높이가 화면 안", root.winfo_height() <= root.winfo_screenheight() * 0.9,
       f"{root.winfo_height()} / 화면 {root.winfo_screenheight()}")
 
+section("A-4. 야간 정지 시간대 입력칸")
+check("정지 시간대 프레임 있음", "야간 정지 시간대" in j)
+check("손절도 멈춘다는 경고 있음", "-2.5%" in j and "커질 수 있습니다" in j, j[:60])
+check("한국 시간 기준 안내", "한국 시간" in j)
+eq("기본 시작 시각", app.quiet_start_var.get(), str(my.QUIET_START_DEFAULT))
+eq("기본 종료 시각", app.quiet_end_var.get(), str(my.QUIET_END_DEFAULT))
+eq("기본은 켜짐", app.quiet_on_var.get(), True)
+
 section("B. 배포용과 똑같이 고정돼 있는가")
 check("레버리지 입력칸 없음", "레버리지 (1~100배):" not in j)
 check("포지션 입력칸 없음", "포지션 크기 (%):" not in j)
@@ -155,6 +163,7 @@ def fake_run(self, *a, **k):
     seen["tg"] = (core.TELEGRAM_BOT_TOKEN, core.TELEGRAM_CHAT_ID)
     seen["fixed"] = (core.LEVERAGE, core.INITIAL_MARGIN_PCT, core.MAX_STEPS)
     seen["log"] = (core.MINIMAL_LOG, core.SHOW_QTY_DETAIL, core.HEDGE_AT_STEP)
+    seen["quiet"] = (core.QUIET_START_HOUR, core.QUIET_END_HOUR, core.QUIET_TZ_OFFSET)
 
 
 dist.HedgedMartingaleGUI._run_bot = fake_run
@@ -172,6 +181,10 @@ eq("최대 단계 고정 그대로", seen.get("fixed", (0, 0, 0))[2], dist.FIXED
 eq("최소 로그 그대로", seen.get("log", (None,))[0], True)
 eq("수량 숨김 그대로", seen.get("log", (0, None))[1], False)
 eq("헷지 꺼짐 그대로", seen.get("log", (0, 0, None))[2], 0)
+
+eq("정지 시작 시각 반영", seen.get("quiet", (None,))[0], my.QUIET_START_DEFAULT)
+eq("정지 종료 시각 반영", seen.get("quiet", (0, None))[1], my.QUIET_END_DEFAULT)
+eq("한국 시간 오프셋 반영", seen.get("quiet", (0, 0, None))[2], my.QUIET_TZ)
 
 section("C. 텔레그램 값이 매매 스레드까지 전달되는가")
 eq("봇 토큰 전달", seen.get("tg", ("", ""))[0], "123456:TESTTOKEN")
@@ -194,6 +207,36 @@ eq("재시작 후 Chat ID 복원", app2.tg_chat_var.get(), "-1001234567890, 555"
 app2.exchange_var.set("Binance")
 app2._on_exchange_changed(None)
 eq("거래소 바꿔도 토큰 유지", app2.tg_token_var.get(), "123456:TESTTOKEN")
+
+check("설정 파일에 정지 시간 저장", saved.get("quiet_start") == str(my.QUIET_START_DEFAULT)
+      and saved.get("quiet_on") is True)
+eq("재시작 후 정지 시각 복원", app2.quiet_start_var.get(), str(my.QUIET_START_DEFAULT))
+eq("재시작 후 켜짐 복원", app2.quiet_on_var.get(), True)
+
+section("D-2. 정지 시간대를 끄거나 잘못 넣었을 때")
+app.quiet_on_var.set(False)
+seen.clear()
+POPUPS.clear()
+app.api_key_var.set("K")
+app.api_secret_var.set("S")
+app._on_start_clicked()
+for _ in range(60):
+    if "quiet" in seen:
+        break
+    time.sleep(0.05)
+eq("끄면 비활성(-1)", seen.get("quiet", (None,))[0], -1)
+app._set_stopped_ui()
+
+app.quiet_on_var.set(True)
+for bad_s, bad_e, why in (("25", "1", "24 초과"), ("abc", "1", "글자"), ("21", "21", "시작=종료")):
+    app.quiet_start_var.set(bad_s)
+    app.quiet_end_var.set(bad_e)
+    POPUPS.clear()
+    seen.clear()
+    app._on_start_clicked()
+    check(f"잘못된 시간 거부({why})", bool(POPUPS) and "quiet" not in seen, str(POPUPS)[:60])
+app.quiet_start_var.set(str(my.QUIET_START_DEFAULT))
+app.quiet_end_var.set(str(my.QUIET_END_DEFAULT))
 
 section("E. 토큰 없이도 동작하는가")
 app.tg_token_var.set("")

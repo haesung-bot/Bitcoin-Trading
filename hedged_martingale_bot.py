@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.4.3"
+VERSION = "1.5.0"
 
 import argparse
 import json
@@ -478,8 +478,46 @@ HEDGE_AT_STEP = int(os.environ.get("HEDGE_AT_STEP", "0"))
 HEDGE_RETRY_SEC = int(os.environ.get("HEDGE_RETRY_SEC", "300"))
 
 
-MARGIN_MODE = os.environ.get("MARGIN_MODE", "cross")
-# 증거금 모드 전환이 거부됐을 때(대개 포지션/미체결이 남아 있을 때) 다시 시도하기까지 쉬는 시간(초).
+# 야간 정지 시간대: 변동성이 큰 시간에는 새 매매를 하지 않고 버틴다.
+# QUIET_START_HOUR = -1 이면 사용하지 않는다. 자정을 넘겨도 된다(예: 21 -> 1).
+# 이 시간대에는
+#   · 신규 진입(1차)을 하지 않는다
+#   · 물타기(다음 차수)를 하지 않는다
+#   · 하드손절을 하지 않는다  ← 이 시간대에 손절이 터지는 것을 막는 것이 목적이다
+#   · 익절은 그대로 한다      ← 수익 구간이 오면 정리하고 나온다
+# 시간이 끝나면 그 자리에서 원래대로(물타기·손절 포함) 이어서 돌아간다.
+QUIET_START_HOUR = int(os.environ.get("QUIET_START_HOUR", "-1"))
+QUIET_END_HOUR = int(os.environ.get("QUIET_END_HOUR", "-1"))
+# 서버(특히 클라우드 VM)는 대개 UTC로 돌아간다. 그래서 '몇 시'인지를 서버 시계에
+# 맡기지 않고, UTC에 이 오프셋을 더해서 판단한다. 한국 시간이면 9다.
+QUIET_TZ_OFFSET = int(os.environ.get("QUIET_TZ_OFFSET", "9"))
+
+
+def quiet_hours_enabled() -> bool:
+    return 0 <= QUIET_START_HOUR <= 23 and 0 <= QUIET_END_HOUR <= 23 and QUIET_START_HOUR != QUIET_END_HOUR
+
+
+def quiet_local_hour(now: Optional[float] = None) -> float:
+    """정지 시간대 판단에 쓸 '현지 시각'(시 단위 실수)."""
+    ts = time.time() if now is None else now
+    return ((ts / 3600.0) + QUIET_TZ_OFFSET) % 24.0
+
+
+def in_quiet_hours(now: Optional[float] = None) -> bool:
+    """지금이 야간 정지 시간대인가."""
+    if not quiet_hours_enabled():
+        return False
+    hour = quiet_local_hour(now)
+    if QUIET_START_HOUR < QUIET_END_HOUR:
+        return QUIET_START_HOUR <= hour < QUIET_END_HOUR
+    return hour >= QUIET_START_HOUR or hour < QUIET_END_HOUR      # 자정을 넘어가는 구간
+
+
+def quiet_hours_label() -> str:
+    return f"{QUIET_START_HOUR:02d}:00~{QUIET_END_HOUR:02d}:00"
+
+
+MARGIN_MODE = os.environ.get("MARGIN_MODE", "cross")# 증거금 모드 전환이 거부됐을 때(대개 포지션/미체결이 남아 있을 때) 다시 시도하기까지 쉬는 시간(초).
 MARGIN_RETRY_SEC = int(os.environ.get("MARGIN_RETRY_SEC", "60"))
 
 # 격리 마진인데 레버리지가 안전 한도를 넘으면 매매를 시작하지 않는다.
@@ -1205,8 +1243,12 @@ class MartingaleModule:
             logger.debug("비정상 시세(%s)를 건너뜁니다.", price)
             return
 
+        # 야간 정지 시간대에는 새로 벌리는 행동(신규 진입·물타기)과 하드손절을 멈춘다.
+        # 익절만 살려두어, 수익 구간이 오면 정리하고 나온다.
+        quiet = in_quiet_hours(now)
+
         if not self.in_position:
-            if self._in_cooldown(now):
+            if quiet or self._in_cooldown(now):
                 return
             if self._entry_signal(price, rsi, bb, trend_ema):
                 self._enter_initial(price)
@@ -1214,10 +1256,13 @@ class MartingaleModule:
 
         pnl_pct = self._pnl_pct(price)
 
-        # 익절: 평단가 대비 +TP_PCT
+        # 익절: 평단가 대비 +TP_PCT (정지 시간대에도 그대로 동작한다)
         if pnl_pct >= TP_PCT:
             self._take_profit(price, now)
             return
+
+        if quiet:
+            return      # 손실 구간이면 그대로 버틴다. 시간이 끝나면 아래 판단을 다시 한다.
 
         # 손절: 평단가 대비 -STOP_LOSS_PCT (물타기 단계와 무관하게 전량 청산)
         if pnl_pct <= -STOP_LOSS_PCT:
@@ -1360,6 +1405,9 @@ class HedgedMartingaleBot:
         self.hedges: dict = {}
         self._hedge_retry_after: dict = {}   # 헷지 주문 실패 시 재시도 대기 시각
         self._hedge_last_error: dict = {}    # 같은 사유 반복 안내 방지
+        # 정지 시간대 진입/해제를 한 번씩만 알리기 위해 직전 상태를 기억한다.
+        # 프로그램을 정지 시간대 한가운데에서 켜면 첫 판단 때 안내가 한 번 나간다.
+        self._quiet_state: Optional[bool] = None
         if self.state_path:
             self._load_state()
         # 상태 파일이 없거나 읽기에 실패해도 거래소 실포지션은 반드시 확인해야 한다.
@@ -1494,10 +1542,11 @@ class HedgedMartingaleBot:
         return f"{module.step}차 · 평단 {module.avg_price:,.2f} · {pnl_pct:+.2f}%"
 
     def _log_heartbeat(self, price: float) -> None:
+        tail = f" | 🌙 정지 시간대({quiet_hours_label()})" if in_quiet_hours() else ""
         logger.info(
-            "%s 시세 %s | 롱 %s | 숏 %s",
+            "%s 시세 %s | 롱 %s | 숏 %s%s",
             HEARTBEAT_MARK, f"{price:,.2f}",
-            self._side_status(self.long, price), self._side_status(self.short, price),
+            self._side_status(self.long, price), self._side_status(self.short, price), tail,
         )
 
     def _hedge_pnl(self, side: Side, price: float) -> float:
@@ -1582,6 +1631,8 @@ class HedgedMartingaleBot:
                     self._close_hedge(module, price)
                     frozen.discard(module.side)
             elif module.in_position and module.step >= HEDGE_AT_STEP:
+                if in_quiet_hours(now):
+                    continue    # 정지 시간대에는 새 포지션을 만들지 않는다(해제는 위에서 처리)
                 if not self._hedge_retry_ok(module.side, now):
                     continue
                 self._open_hedge(module, price, now)
@@ -1589,7 +1640,32 @@ class HedgedMartingaleBot:
                     frozen.add(module.side)
         return frozen
 
+    def _announce_quiet_change(self, now: Optional[float]) -> None:
+        """정지 시간대가 시작되거나 끝날 때 한 번씩 알린다."""
+        if not quiet_hours_enabled():
+            return
+        quiet = in_quiet_hours(now)
+        if quiet == self._quiet_state:
+            return
+        first_look = self._quiet_state is None
+        self._quiet_state = quiet
+        # 켜자마자 '정지 시간대가 끝났습니다'가 나가면 안 된다. 첫 판단에서는 지금이
+        # 정지 시간대일 때만 알리고, 아니면 상태만 기억해둔다.
+        if first_look and not quiet:
+            return
+        held = [m for m in (self.long, self.short) if m.in_position]
+        if quiet:
+            tail = ("보유 중인 포지션은 그대로 들고 갑니다. 수익 구간이 오면 익절은 합니다."
+                    if held else "새 진입 없이 대기합니다.")
+            self.notifier.send(f"🌙 야간 정지 시간대({quiet_hours_label()})에 들어갔습니다.\n"
+                               f"   신규 진입·물타기·손절을 멈춥니다. {tail}")
+        else:
+            tail = "보유 중인 포지션부터 이어서 판단합니다." if held else "새 진입을 다시 시작합니다."
+            self.notifier.send(f"☀ 야간 정지 시간대({quiet_hours_label()})가 끝났습니다.\n"
+                               f"   평소대로 매매를 재개합니다. {tail}")
+
     def on_price(self, price: float, closes_window: List[float], now: Optional[float] = None) -> None:
+        self._announce_quiet_change(now)
         rsi = Indicators.rsi(closes_window)
         bb = Indicators.bollinger(closes_window)
         trend_ema = Indicators.ema(closes_window, TREND_EMA_PERIOD) if TREND_EMA_PERIOD else None
@@ -1658,6 +1734,9 @@ class HedgedMartingaleBot:
                 "잔고가 0으로 조회됩니다. 선물 지갑에 USDT가 있는지 확인해주세요. "
                 "(일시적인 조회 실패라면 그대로 두시면 자동으로 다시 시도합니다)"
             )
+        if quiet_hours_enabled():
+            logger.info("야간 정지 시간대: %s (UTC%+d 기준) — 이 시간에는 신규 진입·물타기·손절을 멈춥니다.",
+                        quiet_hours_label(), QUIET_TZ_OFFSET)
         logger.info("자동매매를 시작했습니다. 매수/매도 기회를 찾는 중입니다...")
 
         # 시세 조회 실패와 매매(주문) 실패는 원인도 조치도 다르므로 따로 안내한다.
