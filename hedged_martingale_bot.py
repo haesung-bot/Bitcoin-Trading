@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 
 import argparse
 import json
@@ -491,6 +491,10 @@ QUIET_END_HOUR = int(os.environ.get("QUIET_END_HOUR", "-1"))
 # 서버(특히 클라우드 VM)는 대개 UTC로 돌아간다. 그래서 '몇 시'인지를 서버 시계에
 # 맡기지 않고, UTC에 이 오프셋을 더해서 판단한다. 한국 시간이면 9다.
 QUIET_TZ_OFFSET = int(os.environ.get("QUIET_TZ_OFFSET", "9"))
+# 정지 시간대라도 이 차수 이상이면 하드손절은 그대로 건다. 0이면 손절을 완전히 멈춘다.
+# 마지막 차수는 포지션이 가장 크고 더 물탈 수도 없어서, 여기까지 보호를 놓으면
+# 한 번의 손실이 감당하기 어려운 크기가 된다. 그래서 마지막 차수만 손절을 남겨둔다.
+QUIET_STOP_LOSS_STEP = int(os.environ.get("QUIET_STOP_LOSS_STEP", "0"))
 
 
 def quiet_hours_enabled() -> bool:
@@ -1261,13 +1265,17 @@ class MartingaleModule:
             self._take_profit(price, now)
             return
 
-        if quiet:
-            return      # 손실 구간이면 그대로 버틴다. 시간이 끝나면 아래 판단을 다시 한다.
-
         # 손절: 평단가 대비 -STOP_LOSS_PCT (물타기 단계와 무관하게 전량 청산)
-        if pnl_pct <= -STOP_LOSS_PCT:
+        # 정지 시간대에는 원칙적으로 손절을 멈추고 버티지만, 마지막 차수처럼 포지션이
+        # 커진 상태까지 보호를 놓으면 손실이 감당하기 어려워진다. 그래서 그 차수부터는
+        # 정지 시간대에도 손절을 그대로 건다.
+        stop_loss_live = (not quiet) or (QUIET_STOP_LOSS_STEP and self.step >= QUIET_STOP_LOSS_STEP)
+        if stop_loss_live and pnl_pct <= -STOP_LOSS_PCT:
             self._stop_loss(price, now)
             return
+
+        if quiet:
+            return      # 물타기는 하지 않는다. 시간이 끝나면 여기서부터 다시 판단한다.
 
         # 물타기: 아직 최대 단계가 아니고 평단가 대비 -STEP_TRIGGER_PCT 이상 빠졌을 때
         if self.step < MAX_STEPS and pnl_pct <= -STEP_TRIGGER_PCT:
@@ -1657,8 +1665,13 @@ class HedgedMartingaleBot:
         if quiet:
             tail = ("보유 중인 포지션은 그대로 들고 갑니다. 수익 구간이 오면 익절은 합니다."
                     if held else "새 진입 없이 대기합니다.")
+            stopped = "신규 진입·물타기를 멈춥니다."
+            if QUIET_STOP_LOSS_STEP:
+                stopped += f" 손절은 {QUIET_STOP_LOSS_STEP}차부터만 겁니다."
+            else:
+                stopped = "신규 진입·물타기·손절을 멈춥니다."
             self.notifier.send(f"🌙 야간 정지 시간대({quiet_hours_label()})에 들어갔습니다.\n"
-                               f"   신규 진입·물타기·손절을 멈춥니다. {tail}")
+                               f"   {stopped} {tail}")
         else:
             tail = "보유 중인 포지션부터 이어서 판단합니다." if held else "새 진입을 다시 시작합니다."
             self.notifier.send(f"☀ 야간 정지 시간대({quiet_hours_label()})가 끝났습니다.\n"
@@ -1735,8 +1748,13 @@ class HedgedMartingaleBot:
                 "(일시적인 조회 실패라면 그대로 두시면 자동으로 다시 시도합니다)"
             )
         if quiet_hours_enabled():
-            logger.info("야간 정지 시간대: %s (UTC%+d 기준) — 이 시간에는 신규 진입·물타기·손절을 멈춥니다.",
-                        quiet_hours_label(), QUIET_TZ_OFFSET)
+            if QUIET_STOP_LOSS_STEP:
+                logger.info("야간 정지 시간대: %s (UTC%+d 기준) — 신규 진입·물타기를 멈추고, "
+                            "손절은 %d차부터만 겁니다.",
+                            quiet_hours_label(), QUIET_TZ_OFFSET, QUIET_STOP_LOSS_STEP)
+            else:
+                logger.info("야간 정지 시간대: %s (UTC%+d 기준) — 이 시간에는 신규 진입·물타기·손절을 멈춥니다.",
+                            quiet_hours_label(), QUIET_TZ_OFFSET)
         logger.info("자동매매를 시작했습니다. 매수/매도 기회를 찾는 중입니다...")
 
         # 시세 조회 실패와 매매(주문) 실패는 원인도 조치도 다르므로 따로 안내한다.

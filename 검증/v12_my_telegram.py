@@ -134,7 +134,8 @@ check("창 높이가 화면 안", root.winfo_height() <= root.winfo_screenheight
 
 section("A-4. 야간 정지 시간대 입력칸")
 check("정지 시간대 프레임 있음", "야간 정지 시간대" in j)
-check("손절도 멈춘다는 경고 있음", "-2.5%" in j and "커질 수 있습니다" in j, j[:60])
+check("1차·2차 손실 경고 있음", "-2.5%" in j and "커질 수 있습니다" in j, j[:60])
+check("3차는 손절한다는 안내", f"{dist.FIXED_MAX_STEPS}차에서는" in j)
 check("한국 시간 기준 안내", "한국 시간" in j)
 eq("기본 시작 시각", app.quiet_start_var.get(), str(my.QUIET_START_DEFAULT))
 eq("기본 종료 시각", app.quiet_end_var.get(), str(my.QUIET_END_DEFAULT))
@@ -163,7 +164,8 @@ def fake_run(self, *a, **k):
     seen["tg"] = (core.TELEGRAM_BOT_TOKEN, core.TELEGRAM_CHAT_ID)
     seen["fixed"] = (core.LEVERAGE, core.INITIAL_MARGIN_PCT, core.MAX_STEPS)
     seen["log"] = (core.MINIMAL_LOG, core.SHOW_QTY_DETAIL, core.HEDGE_AT_STEP)
-    seen["quiet"] = (core.QUIET_START_HOUR, core.QUIET_END_HOUR, core.QUIET_TZ_OFFSET)
+    seen["quiet"] = (core.QUIET_START_HOUR, core.QUIET_END_HOUR, core.QUIET_TZ_OFFSET,
+                     core.QUIET_STOP_LOSS_STEP)
 
 
 dist.HedgedMartingaleGUI._run_bot = fake_run
@@ -185,6 +187,7 @@ eq("헷지 꺼짐 그대로", seen.get("log", (0, 0, None))[2], 0)
 eq("정지 시작 시각 반영", seen.get("quiet", (None,))[0], my.QUIET_START_DEFAULT)
 eq("정지 종료 시각 반영", seen.get("quiet", (0, None))[1], my.QUIET_END_DEFAULT)
 eq("한국 시간 오프셋 반영", seen.get("quiet", (0, 0, None))[2], my.QUIET_TZ)
+eq("마지막 차수부터 손절 유지", seen.get("quiet", (0, 0, 0, None))[3], dist.FIXED_MAX_STEPS)
 
 section("C. 텔레그램 값이 매매 스레드까지 전달되는가")
 eq("봇 토큰 전달", seen.get("tg", ("", ""))[0], "123456:TESTTOKEN")
@@ -225,6 +228,7 @@ for _ in range(60):
         break
     time.sleep(0.05)
 eq("끄면 비활성(-1)", seen.get("quiet", (None,))[0], -1)
+eq("끄면 손절 차수도 0", seen.get("quiet", (0, 0, 0, None))[3], 0)
 app._set_stopped_ui()
 
 app.quiet_on_var.set(True)

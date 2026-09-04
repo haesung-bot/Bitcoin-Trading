@@ -99,14 +99,18 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
         tk.Label(quiet_frame, text="시  (한국 시간)").grid(row=1, column=4, sticky="w", pady=(4, 0))
 
         tk.Label(quiet_frame,
-                 text="※ 이 시간에는 신규 진입·물타기·손절을 모두 멈추고 버팁니다."
+                 text="※ 이 시간에는 신규 진입과 물타기를 하지 않습니다."
                       "  수익 구간이 오면 익절은 그대로 합니다.",
                  fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=2, column=0, columnspan=6, sticky="w", pady=(6, 0))
         tk.Label(quiet_frame,
-                 text="※ 손절이 멈추므로, 이 시간에 시세가 크게 밀리면 손실이 -2.5%보다 커질 수 있습니다.",
-                 fg="#c0392b", font=("맑은 고딕", 8)).grid(row=3, column=0, columnspan=6, sticky="w")
+                 text=f"※ 손절은 1차·2차에서는 걸지 않고 버티며, "
+                      f"{dist.FIXED_MAX_STEPS}차에서는 이 시간에도 그대로 손절합니다.",
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=3, column=0, columnspan=6, sticky="w")
+        tk.Label(quiet_frame,
+                 text="※ 1차·2차는 손절이 멈추므로 손실이 -2.5%보다 커질 수 있습니다.",
+                 fg="#c0392b", font=("맑은 고딕", 8)).grid(row=4, column=0, columnspan=6, sticky="w")
         tk.Label(quiet_frame, text="※ 서버가 해외(UTC)에 있어도 한국 시간 기준으로 판단합니다.",
-                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=4, column=0, columnspan=6, sticky="w")
+                 fg="#7f8c8d", font=("맑은 고딕", 8)).grid(row=5, column=0, columnspan=6, sticky="w")
 
         for var in (self.tg_token_var, self.tg_chat_var,
                     self.quiet_on_var, self.quiet_start_var, self.quiet_end_var):
@@ -375,8 +379,11 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
                                      "시작 시각과 종료 시각이 같습니다. 다르게 넣어주세요.")
                 return
             core.QUIET_START_HOUR, core.QUIET_END_HOUR = start, end
+            # 1차·2차는 버티고, 마지막 차수(3차)에서는 정지 시간대라도 손절한다.
+            core.QUIET_STOP_LOSS_STEP = dist.FIXED_MAX_STEPS
         else:
             core.QUIET_START_HOUR = core.QUIET_END_HOUR = -1
+            core.QUIET_STOP_LOSS_STEP = 0
         core.QUIET_TZ_OFFSET = QUIET_TZ
 
         super()._on_start_clicked()
@@ -386,7 +393,7 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
         core.TELEGRAM_CHAT_ID = self._tg_chat
         if core.quiet_hours_enabled():
             self._log(f"야간 정지 시간대 {core.quiet_hours_label()} (한국 시간) — "
-                      f"이 시간에는 신규 진입·물타기·손절을 멈춥니다.")
+                      f"신규 진입·물타기를 멈추고, 손절은 {core.QUIET_STOP_LOSS_STEP}차부터만 겁니다.")
         if self._tg_token and self._tg_chat:
             self._log(f"텔레그램 알림 켜짐 ({len(core.parse_chat_ids(self._tg_chat))}곳)")
         else:

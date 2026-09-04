@@ -24,13 +24,24 @@ def kst(hour, minute=0, day=4):
     return calendar.timegm((2026, 9, day, hour - TZ, minute, 0, 0, 0, 0))
 
 
-def setup(lev=25, pos=0.03, steps=3, start=21, end=1):
+def setup(lev=25, pos=0.03, steps=3, start=21, end=1, sl_step=0):
     defaults(core, lev=lev, pos=pos)
     core.MAX_STEPS = steps
     core.HEDGE_AT_STEP = 0
     core.MAX_CONSECUTIVE_SL = 10 ** 9
     core.QUIET_TZ_OFFSET = TZ
     core.QUIET_START_HOUR, core.QUIET_END_HOUR = start, end
+    core.QUIET_STOP_LOSS_STEP = sl_step
+
+
+def at_step(bot, n, p):
+    """롱을 n차까지 채워 넣은 상태로 만든다(배수 1:2:4)."""
+    m = bot.long
+    m.fills = [Fill(p * (1 - 0.012 * i), 0.01 * (2 ** i)) for i in range(n)]
+    m._recalc_avg()
+    m.step = n
+    bot.broker.pos["LONG"] = {"qty": m.total_qty, "entry": m.avg_price}
+    return m
 
 
 def make_bot(balance=1600.0):
@@ -222,6 +233,59 @@ check("정상 시간엔 헷지 걸림", Side.LONG in bot.hedges)
 bot._handle_hedges(bot.long.avg_price, kst(23))
 check("정지 중에도 헷지 해제는 됨", Side.LONG not in bot.hedges)
 core.HEDGE_AT_STEP = 0
+
+section("C-2. 마지막 차수(3차)에서는 정지 시간대에도 손절한다")
+setup(sl_step=3)
+for n, should_stop in ((1, False), (2, False), (3, True)):
+    ex, bot = make_bot()
+    m = at_step(bot, n, p)
+    deep_n = m.avg_price * (1 - core.STOP_LOSS_PCT * 1.6)
+    bot.on_price(deep_n, falling_window(deep_n), kst(22))
+    if should_stop:
+        check(f"22시 {n}차: 손절함", not m.in_position, f"손실 {core.STOP_LOSS_PCT*160:.0f}% 수준")
+    else:
+        check(f"22시 {n}차: 버팀(손절 안 함)", m.in_position)
+        check(f"22시 {n}차: 물타기도 안 함", m.step == n, f"{n}차 → {m.step}차")
+
+# 손절 문턱 자체는 그대로여야 한다 — 3차라도 -2.5%에 못 미치면 안 자른다
+ex, bot = make_bot()
+m = at_step(bot, 3, p)
+shallow = m.avg_price * (1 - core.STOP_LOSS_PCT * 0.8)
+bot.on_price(shallow, falling_window(shallow), kst(22))
+check("22시 3차: 손절 문턱 못 넘으면 안 자름", m.in_position,
+      f"손실 {m._pnl_pct(shallow)*100:.2f}%")
+
+# 3차라도 익절은 그대로
+ex, bot = make_bot()
+m = at_step(bot, 3, p)
+up3 = m.avg_price * (1 + core.TP_PCT * 1.2)
+bot.on_price(up3, falling_window(up3), kst(22))
+check("22시 3차: 익절은 함", not m.in_position)
+
+# 정상 시간에는 1차도 손절한다(정지 시간대에서만 봐주는 것)
+setup(sl_step=3)
+ex, bot = make_bot()
+m = at_step(bot, 1, p)
+deep1 = m.avg_price * (1 - core.STOP_LOSS_PCT * 1.6)
+bot.on_price(deep1, falling_window(deep1), kst(14))
+check("14시 1차: 평소대로 손절함", not m.in_position)
+
+# 0으로 두면 3차도 버틴다(예전 동작)
+setup(sl_step=0)
+ex, bot = make_bot()
+m = at_step(bot, 3, p)
+bot.on_price(deep1, falling_window(deep1), kst(22))
+check("설정 0이면 3차도 버팀", m.in_position)
+
+section("F-2. 안내 문구에 손절 차수가 반영된다")
+setup(sl_step=3)
+cap3 = Cap()
+ex3 = Exchange(balance=1600.0, fee=0.0005)
+bot3 = HedgedMartingaleBot(ex3, cap3, "QUIET", state_path=fresh_path())
+bot3.on_price(p, falling_window(p), kst(22))
+msg = [m for m in cap3.msgs if "🌙" in m]
+check("안내에 '3차부터만' 표시", msg and "3차부터만" in msg[0], msg[0][:80] if msg else "")
+check("안내에서 손절을 멈춘다고 하지 않음", msg and "손절을 멈춥니다" not in msg[0])
 
 section("I. 기능을 끄면 예전과 똑같다")
 setup(start=-1, end=-1)
