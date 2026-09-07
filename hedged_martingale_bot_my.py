@@ -28,9 +28,13 @@ import requests
 import hedged_martingale_bot as core
 import hedged_martingale_bot_gui as dist
 
-# 야간 정지 시간대 기본값(한국 시간). 21시에 들어가서 다음날 1시에 풀린다.
+# 야간 정지 시간대. 기본은 꺼둔다.
+# 463일치 실제 데이터로 검증했더니, 21~1시 정지는 익절 기회를 716번 없애는 대신
+# 막아낸 손절이 2건뿐이었다. 손익 -42%, 최대낙폭 26.8% -> 42.6%로 양쪽 다 나빠졌다.
+# 기능 자체는 남겨두되 켜고 끄는 것은 사용자가 정한다.
 QUIET_START_DEFAULT = 21
 QUIET_END_DEFAULT = 1
+QUIET_ON_DEFAULT = False
 QUIET_TZ = 9                # 한국 표준시. 서버가 UTC여도 이 값으로 보정한다.
 
 
@@ -40,7 +44,8 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
     def __init__(self, root: tk.Tk):
         self._tg_token = ""     # 시작 버튼을 누른 순간의 값(매매 스레드에서 쓴다)
         self._tg_chat = ""
-        self._quiet_cfg = (QUIET_START_DEFAULT, QUIET_END_DEFAULT, dist.FIXED_MAX_STEPS)
+        self._quiet_cfg = ((QUIET_START_DEFAULT, QUIET_END_DEFAULT, dist.FIXED_MAX_STEPS)
+                           if QUIET_ON_DEFAULT else (-1, -1, 0))
         super().__init__(root)
         self.root.title("비트코인 선물 자동매매 (내 계정용)")
 
@@ -85,9 +90,10 @@ class MyBotGUI(dist.HedgedMartingaleGUI):
         else:
             quiet_frame.pack(fill="x", padx=15, pady=5)
 
-        self.quiet_on_var = tk.BooleanVar(value=True)
+        self.quiet_on_var = tk.BooleanVar(value=QUIET_ON_DEFAULT)
         tk.Checkbutton(quiet_frame, variable=self.quiet_on_var,
-                       text="이 시간에는 새 매매를 하지 않는다").grid(row=0, column=0, columnspan=6, sticky="w")
+                       text="이 시간에는 새 매매를 하지 않는다 (기본 꺼짐 — 검증에서 손해였음)").grid(
+            row=0, column=0, columnspan=6, sticky="w")
 
         tk.Label(quiet_frame, text="시작").grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.quiet_start_var = tk.StringVar(value=str(QUIET_START_DEFAULT))

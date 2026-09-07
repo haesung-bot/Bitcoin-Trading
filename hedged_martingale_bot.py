@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # 실행 중인 코드가 최신인지 로그로 바로 확인하기 위한 버전 표식.
 # 코드를 의미 있게 바꿀 때마다 이 문자열을 갱신한다.
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 import argparse
 import json
@@ -393,6 +393,11 @@ COOLDOWN_SEC = 180              # 청산 후 재진입 대기 3분
 # 하드손절 뒤에는 더 길게 쉰다. 손절이 났다는 것은 그 방향으로 흐름이 강하다는 뜻이라,
 # 바로 다시 들어가면 같은 흐름에 또 맞는다. 그 방향만 쉬고 반대쪽은 계속 매매한다.
 STOP_LOSS_COOLDOWN_SEC = int(os.environ.get("STOP_LOSS_COOLDOWN_SEC", "3600"))
+# 손절 뒤 쉬는 동안 양쪽을 다 멈출지. True면 손절이 난 방향뿐 아니라 반대 방향도 함께 쉰다.
+# 손절이 났다는 것은 시장이 한쪽으로 세게 밀리는 중이라는 뜻이고, 그럴 때는 반대편으로
+# 들어가는 것도 위험하다. 이미 열려 있는 반대편 포지션은 그대로 관리한다(익절·손절 동작).
+# 막는 것은 '새 진입'뿐이다.
+STOP_LOSS_REST_BOTH_SIDES = os.environ.get("STOP_LOSS_REST_BOTH_SIDES", "1").lower() not in ("0", "false", "no")
 MAX_CONSECUTIVE_SL = int(os.environ.get("MAX_CONSECUTIVE_SL", "3"))  # 연속 손절 N회 시 해당 방향 자동 정지
 RSI_PERIOD = 14
 RSI_LONG_TRIGGER = 40.0
@@ -1122,6 +1127,8 @@ class MartingaleModule:
         self.qty_provider = qty_provider
         self.mode_label = mode_label
         self.on_trade_closed = on_trade_closed  # 청산될 때마다 매매 기록을 남기기 위한 콜백
+        # 손절이 났을 때 반대 방향에도 휴식을 걸기 위한 콜백. 봇이 채워 넣는다.
+        self.on_stop_loss: Optional[Callable[["MartingaleModule", float], None]] = None
         self.consecutive_sl = 0
         self.halted = False
         self._reset()
@@ -1353,7 +1360,15 @@ class MartingaleModule:
         self._reset()
         self.consecutive_sl += 1
         rest = max(COOLDOWN_SEC, STOP_LOSS_COOLDOWN_SEC)
-        self.cooldown_until = (time.time() if now is None else now) + rest
+        until = (time.time() if now is None else now) + rest
+        self.cooldown_until = until
+        # 양방향 휴식이면 반대쪽도 함께 재운다. 손절이 났다는 것은 시장이 한쪽으로
+        # 세게 밀리고 있다는 뜻이라, 반대편으로 바로 들어가는 것도 위험하기 때문이다.
+        if STOP_LOSS_REST_BOTH_SIDES and self.on_stop_loss is not None:
+            try:
+                self.on_stop_loss(self, until)
+            except Exception as e:
+                logger.debug("반대 방향 휴식 적용 실패: %s", e)
         self._notify_rest(rest)
         if self.consecutive_sl >= MAX_CONSECUTIVE_SL:
             self.halted = True
@@ -1367,7 +1382,10 @@ class MartingaleModule:
             span = f"{int(seconds // 3600)}시간"
         else:
             span = f"{int(round(seconds / 60))}분"
-        self.notifier.send(f"⏸ {self._side_ko}은 {span} 쉬었다가 다시 매매합니다.")
+        if STOP_LOSS_REST_BOTH_SIDES:
+            self.notifier.send(f"⏸ 손절이 나서 롱·숏 모두 {span} 쉬었다가 다시 매매합니다.")
+        else:
+            self.notifier.send(f"⏸ {self._side_ko}은 {span} 쉬었다가 다시 매매합니다.")
 
     # ───── 사용자 화면용 알림 ─────
     # 배포용이므로 내부 전략(진입 조건, 단계별 물타기, 쿨다운, 안전장치 기준 등)이 드러나지 않도록
@@ -1422,6 +1440,8 @@ class HedgedMartingaleBot:
         qty_provider = make_qty_provider(broker)
         self.long = MartingaleModule(Side.LONG, broker, notifier, qty_provider, mode_label, on_trade_closed)
         self.short = MartingaleModule(Side.SHORT, broker, notifier, qty_provider, mode_label, on_trade_closed)
+        self.long.on_stop_loss = self._rest_both_sides
+        self.short.on_stop_loss = self._rest_both_sides
         # 헷지 물량: 보호 대상 방향 -> Fill(진입가, 수량).
         # 거래소는 방향당 포지션이 하나뿐이라, 롱을 헷지한 숏은 숏 모듈의 포지션과 합쳐진다.
         # 그래서 헷지 물량을 여기서 따로 들고 있다가 청산/동기화 때 빼주어야 수량이 맞는다.
@@ -1638,6 +1658,18 @@ class HedgedMartingaleBot:
         self.notifier.send(f"🔓 {side_ko} 헷지 정리 | {result} {pnl:+,.2f} USDT | 가격 {price:,.2f}")
         del self.hedges[module.side]
         module._reset()
+
+    def _rest_both_sides(self, source, until: float) -> None:
+        """한쪽에서 손절이 나면 반대 방향에도 같은 시각까지 휴식을 건다.
+
+        이미 걸려 있는 휴식이 더 길면 그대로 둔다(짧게 덮어써서 일찍 깨우지 않는다).
+        열려 있는 포지션은 건드리지 않는다. 막는 것은 새 진입뿐이다.
+        """
+        for module in (self.long, self.short):
+            if module is source:
+                continue
+            if module.cooldown_until is None or module.cooldown_until < until:
+                module.cooldown_until = until
 
     def _handle_hedges(self, price: float, now: Optional[float]) -> set:
         """헷지 진입/해제를 처리하고, 이번 틱에 봇 로직을 건너뛸 방향을 돌려준다."""

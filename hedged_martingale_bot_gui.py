@@ -32,14 +32,18 @@ FIXED_LEVERAGE = 25
 FIXED_POS_PCT = 0.03        # 잔고의 3%
 FIXED_MAX_STEPS = 3         # 3차까지만 진입하고 더 물타지 않는다
 
-# 야간 정지 시간대(한국 시간). 변동성이 큰 이 시간에는 새 매매를 하지 않는다.
-# 마지막 차수는 물량이 커서 보호를 놓을 수 없으므로 그 차수만 손절을 남겨둔다.
-FIXED_QUIET_START = 21
-FIXED_QUIET_END = 1
-FIXED_QUIET_TZ = 9          # 서버가 UTC여도 한국 시간으로 판단한다
+# 야간 정지 시간대는 쓰지 않는다(-1 = 사용 안 함).
+# 실제 BTC 15분봉 463일치로 검증한 결과, 21~1시에 정지를 걸면 익절 기회가 716번 줄어드는
+# 대신 막아낸 손절은 2건뿐이었다. 손익은 42% 줄고 최대낙폭은 26.8% -> 42.6%로 오히려
+# 나빠졌다. 손절의 대부분은 그 시간대에 생긴 것이 아니라 낮에 잡힌 포지션이 밤에 정리된
+# 것이었다(손실 기준 84%). 그래서 시간대로 막는 방식은 버렸다.
+FIXED_QUIET_START = -1
+FIXED_QUIET_END = -1
+FIXED_QUIET_TZ = 9
 
-# 손절이 난 방향은 이만큼 쉬었다가 다시 들어간다(초). 반대 방향은 계속 매매한다.
+# 손절이 나면 이만큼 쉬었다가 다시 들어간다(초). 롱·숏 양쪽 모두 쉰다.
 FIXED_SL_REST_SEC = 3600    # 1시간
+FIXED_SL_REST_BOTH = True   # 손절 난 방향뿐 아니라 반대 방향도 함께 쉰다
 
 # 매매 방식이 드러나지 않도록 로그를 최소한으로 남긴다.
 core.MINIMAL_LOG = True
@@ -72,13 +76,10 @@ def _fixed_caution_text() -> str:
         f"· 그래도 위험이 사라지는 것은 아닙니다.\n"
         f"  3번째까지 들어간 상태에서 급락·급등이 나오면 손절선에 닿기 전에\n"
         f"  거래소가 먼저 강제 청산할 수 있습니다. 이 경우 손실이 훨씬 커집니다.\n\n"
-        f"· 손절이 나면 그 방향은 {FIXED_SL_REST_SEC // 3600}시간 쉬었다가 다시 들어갑니다.\n"
-        f"  손절이 났다는 것은 그쪽으로 흐름이 강하다는 뜻이라, 바로 다시 들어가면\n"
-        f"  같은 흐름에 또 맞기 쉽습니다. 쉬는 동안 반대 방향은 그대로 매매합니다.\n\n"
-        f"· 밤 {FIXED_QUIET_START}시부터 새벽 {FIXED_QUIET_END}시까지(한국 시간)는 새 매매를 하지 않습니다.\n"
-        f"  이 시간대는 시세가 크게 흔들려 손실이 나기 쉬워서, 새로 들어가지 않고\n"
-        f"  가지고 있는 것만 관리합니다. 수익 구간이 오면 그때는 정리하고 나옵니다.\n"
-        f"  서버가 해외에 있어도 한국 시간을 기준으로 판단합니다.\n\n"
+        f"· 손절이 나면 롱·숏 양쪽 모두 {FIXED_SL_REST_SEC // 3600}시간 쉬었다가 다시 들어갑니다.\n"
+        f"  손절이 났다는 것은 시세가 한쪽으로 세게 밀리는 중이라는 뜻입니다. 그때는\n"
+        f"  반대 방향으로 들어가는 것도 위험해서 양쪽을 같이 멈춥니다.\n"
+        f"  이미 열려 있는 포지션은 그대로 관리합니다. 멈추는 것은 새 진입뿐입니다.\n\n"
         f"· 처음에는 반드시 소액으로 며칠 돌려보시고, 동작을 충분히 확인한 뒤\n"
         f"  금액을 늘리세요.\n\n\n"
     )
@@ -237,9 +238,7 @@ class HedgedMartingaleGUI:
         rows = (("레버리지", f"{FIXED_LEVERAGE}배"),
                 ("1회 진입 크기", f"잔고의 {FIXED_POS_PCT*100:g}%"),
                 ("증거금 모드", "교차(Cross) — 시작할 때 자동 설정"),
-                ("야간 정지", f"{FIXED_QUIET_START:02d}:00~{FIXED_QUIET_END:02d}:00 "
-                            f"(한국 시간) 새 매매 안 함"),
-                ("손절 후 휴식", f"{FIXED_SL_REST_SEC // 3600}시간 쉬었다가 재개"))
+                ("손절 후 휴식", f"롱·숏 모두 {FIXED_SL_REST_SEC // 3600}시간 쉬었다가 재개"))
         for r, (k, v) in enumerate(rows, start=1):
             tk.Label(config_frame, text=f"  · {k}").grid(row=r, column=0, sticky="w")
             tk.Label(config_frame, text=v, font=("맑은 고딕", 9, "bold"),
@@ -572,11 +571,12 @@ class HedgedMartingaleGUI:
         core.MINIMAL_LOG = True
         core.SHOW_QTY_DETAIL = False
         core.HEDGE_AT_STEP = 0      # 3차에서 멈추고 하드손절 후 재진입
-        core.QUIET_START_HOUR = FIXED_QUIET_START
+        core.QUIET_START_HOUR = FIXED_QUIET_START      # -1 = 야간 정지 사용 안 함
         core.QUIET_END_HOUR = FIXED_QUIET_END
         core.QUIET_TZ_OFFSET = FIXED_QUIET_TZ
-        core.QUIET_STOP_LOSS_STEP = FIXED_MAX_STEPS
+        core.QUIET_STOP_LOSS_STEP = 0
         core.STOP_LOSS_COOLDOWN_SEC = FIXED_SL_REST_SEC
+        core.STOP_LOSS_REST_BOTH_SIDES = FIXED_SL_REST_BOTH
 
         self._save_credentials()
         self._log(f"{exchange_name} 연결을 시작합니다.")

@@ -45,46 +45,18 @@ else:
           f"{LEV}배 > 한도 {safe_iso:.1f}배 → 격리면 시작 안 함")
 
 import re as _re
-QS = int(_re.search(r"^FIXED_QUIET_START\s*=\s*(\d+)", GUI_SRC, _re.M).group(1))
-QE = int(_re.search(r"^FIXED_QUIET_END\s*=\s*(\d+)", GUI_SRC, _re.M).group(1))
-QTZ = int(_re.search(r"^FIXED_QUIET_TZ\s*=\s*(\d+)", GUI_SRC, _re.M).group(1))
-check("배포용도 야간 정지를 쓴다", "core.QUIET_START_HOUR = FIXED_QUIET_START" in GUI_SRC)
-check("정지 시간대가 21~1시", (QS, QE) == (21, 1), f"{QS}~{QE}")
-check("한국 시간 기준", QTZ == 9, str(QTZ))
-check("마지막 차수는 손절 유지", "core.QUIET_STOP_LOSS_STEP = FIXED_MAX_STEPS" in GUI_SRC)
-check("화면 안내에 야간 정지 표시", '("야간 정지"' in GUI_SRC)
+QS = int(_re.search(r"^FIXED_QUIET_START\s*=\s*(-?\d+)", GUI_SRC, _re.M).group(1))
+QE = int(_re.search(r"^FIXED_QUIET_END\s*=\s*(-?\d+)", GUI_SRC, _re.M).group(1))
+check("배포용은 야간 정지를 쓰지 않는다", QS < 0 and QE < 0, f"{QS}~{QE}")
+check("시작할 때 정지값을 명시적으로 끈다", "core.QUIET_START_HOUR = FIXED_QUIET_START" in GUI_SRC)
+check("정지 손절차수도 0으로", "core.QUIET_STOP_LOSS_STEP = 0" in GUI_SRC)
+check("화면 안내에 야간 정지 없음", '("야간 정지"' not in GUI_SRC)
+check("화면 안내에 손절 후 휴식 있음", '("손절 후 휴식"' in GUI_SRC)
 
-core.QUIET_START_HOUR, core.QUIET_END_HOUR = QS, QE
-core.QUIET_TZ_OFFSET = QTZ
-core.QUIET_STOP_LOSS_STEP = STEPS
-import calendar as _cal
-
-
-def _kst(h):
-    return _cal.timegm((2026, 9, 4, h - QTZ, 0, 0, 0, 0, 0))
-
-
-check("한국시간 22시는 정지", core.in_quiet_hours(_kst(22)))
-check("한국시간 14시는 정상", not core.in_quiet_hours(_kst(14)))
-
-# 최소 로그에서는 안내에도 매매 방식이 드러나면 안 된다
-_buf = []
-
-
-class _Cap2:
-    def send(self, text, telegram_text=None):
-        _buf.append(text)
-
-
-_ex2 = Exchange(balance=1600.0, fee=0.0005)
-_b2 = HedgedMartingaleBot(_ex2, _Cap2(), "DIST", state_path=fresh_path())
-_b2.on_price(65000.0, [65000.0] * 100, _kst(22))
-_q = [m for m in _buf if "🌙" in m]
-check("정지 안내가 나감", len(_q) == 1, str(_buf[:1]))
-for _w in ("물타기", "차부터", "평단", "마틴"):
-    check(f"정지 안내에 '{_w}' 없음", not _q or _w not in _q[0], _q[0] if _q else "")
 core.QUIET_START_HOUR = core.QUIET_END_HOUR = -1
 core.QUIET_STOP_LOSS_STEP = 0
+check("이 설정에서는 어느 시각도 정지가 아니다",
+      not core.quiet_hours_enabled() and not core.in_quiet_hours(1_800_000_000.0))
 
 section("B. 로그가 전략을 드러내지 않는가")
 buf = []

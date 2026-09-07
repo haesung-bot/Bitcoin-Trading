@@ -179,8 +179,10 @@ for app, label in ((app_d, "배포용"), (app_m, "개인용")):
         POPUPS.clear()
         core.LEVERAGE, core.INITIAL_MARGIN_PCT, core.MAX_STEPS = 1, 0.99, 4
         core.MINIMAL_LOG, core.SHOW_QTY_DETAIL, core.HEDGE_AT_STEP = False, True, 3
-        core.QUIET_START_HOUR = core.QUIET_END_HOUR = -1
-        core.QUIET_STOP_LOSS_STEP = 0
+        core.QUIET_START_HOUR = core.QUIET_END_HOUR = 21
+        core.QUIET_STOP_LOSS_STEP = 9
+        core.STOP_LOSS_COOLDOWN_SEC = 1
+        core.STOP_LOSS_REST_BOTH_SIDES = False
         orig = app._run_bot
         app._run_bot = lambda *a, **k: None
         app._on_start_clicked()
@@ -192,10 +194,11 @@ for app, label in ((app_d, "배포용"), (app_m, "개인용")):
         eq("배포용: 최소 로그 켜짐", core.MINIMAL_LOG, True)
         eq("배포용: 수량 숨김", core.SHOW_QTY_DETAIL, False)
         eq("배포용: 헷지 꺼짐", core.HEDGE_AT_STEP, 0)
-        eq("배포용: 야간 정지 시작", core.QUIET_START_HOUR, dist.FIXED_QUIET_START)
-        eq("배포용: 야간 정지 종료", core.QUIET_END_HOUR, dist.FIXED_QUIET_END)
-        eq("배포용: 한국 시간 기준", core.QUIET_TZ_OFFSET, dist.FIXED_QUIET_TZ)
-        eq("배포용: 마지막 차수 손절 유지", core.QUIET_STOP_LOSS_STEP, dist.FIXED_MAX_STEPS)
+        check("배포용: 야간 정지 꺼짐", not core.quiet_hours_enabled(),
+              f"{core.QUIET_START_HOUR}~{core.QUIET_END_HOUR}")
+        eq("배포용: 정지 손절차수 0", core.QUIET_STOP_LOSS_STEP, 0)
+        eq("배포용: 손절 휴식 1시간", core.STOP_LOSS_COOLDOWN_SEC, dist.FIXED_SL_REST_SEC)
+        eq("배포용: 손절 휴식 양방향", core.STOP_LOSS_REST_BOTH_SIDES, True)
         check("배포용: 증거금이 잔고를 넘지 않음",
               dist.FIXED_POS_PCT * (2 ** dist.FIXED_MAX_STEPS - 1) <= 1.0,
               f"{dist.FIXED_POS_PCT*(2**dist.FIXED_MAX_STEPS-1)*100:.0f}%")
