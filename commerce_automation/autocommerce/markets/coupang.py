@@ -175,9 +175,7 @@ class CoupangAdapter(MarketAdapter):
             "productGroup": listing.attributes.get("productGroup", ""),
             "deliveryMethod": "SEQUENCIAL",
             "deliveryCompanyCode": self.cfg.get("delivery_company", "CJGLS"),
-            "deliveryChargeType": "FREE",
-            "deliveryCharge": 0,
-            "freeShipOverAmount": 0,
+            **_delivery_charge_fields(listing),
             "deliveryChargeOnReturn": int(self.cfg.get("return_charge", 5000)),
             "remoteAreaDeliverable": "N",
             "unionDeliveryType": "NOT_UNION_DELIVERY",
@@ -229,6 +227,27 @@ class CoupangAdapter(MarketAdapter):
                     source_url="",
                 ))
         return tasks
+
+
+def _delivery_charge_fields(listing: Listing) -> dict[str, Any]:
+    """배송비 정책 -> 쿠팡 배송비 필드.
+
+    마진 계산이 전제한 배송비와 등록값이 어긋나면 그대로 손실이 되므로,
+    Listing 이 실어 온 정책값을 그대로 옮긴다.
+    """
+    if listing.shipping_mode == "paid":
+        return {
+            "deliveryChargeType": "NOT_FREE",
+            "deliveryCharge": listing.shipping_charge,
+            "freeShipOverAmount": 0,
+        }
+    if listing.shipping_mode == "conditional":
+        return {
+            "deliveryChargeType": "CONDITIONAL_FREE",
+            "deliveryCharge": listing.shipping_charge,
+            "freeShipOverAmount": listing.free_ship_over,
+        }
+    return {"deliveryChargeType": "FREE", "deliveryCharge": 0, "freeShipOverAmount": 0}
 
 
 def _now_iso() -> str:

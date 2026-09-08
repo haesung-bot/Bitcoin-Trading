@@ -40,7 +40,7 @@ SETTINGS = {
         "default_policy": "standard",
         "policies": {"standard": {
             "target_margin": 0.18, "vat_mode": "general",
-            "outbound_shipping": 3000, "packaging": 500,
+            "shipping_cost": 3000, "packaging": 500,
             "fees": {"naver": {"c": 0.0774}, "coupang": {"c": 0.128}},
             "rounding": {"mode": "charm", "unit": 1000, "ending": 900},
             "guards": {"min_price": 9900, "max_price": 900000,

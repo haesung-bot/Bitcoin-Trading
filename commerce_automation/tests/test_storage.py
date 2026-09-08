@@ -3,10 +3,11 @@ import unittest
 from pathlib import Path
 
 from autocommerce.models import (
-    ListingResult, PriceBreakdown, PricedProduct, ProductOption, RawProduct,
-    SeoContent, Stage,
+    ListingResult, PricedProduct, ProductOption, RawProduct, SeoContent, Stage,
 )
 from autocommerce.storage import Store
+
+from . import breakdown
 
 
 def raw(cost=50000, pid="A1"):
@@ -93,8 +94,7 @@ class TestStageProgression(StoreCase):
         self.store.save_media(p.uid, _dummy_media(p.uid))
         priced = PricedProduct(
             raw=p,
-            price=PriceBreakdown(70000, 50000, 0, 3000, 500, 0.08, 5600, 1000,
-                                 12000, 0.17, "standard"),
+            price=breakdown(70000, 50000, net_profit=12000, margin_rate=0.17),
             seo=SeoContent(title="t"),
         )
         self.store.save_priced(priced)
@@ -158,8 +158,7 @@ class TestAuditTrail(StoreCase):
         self.store.save_raw(p)
         self.store.save_priced(PricedProduct(
             raw=p,
-            price=PriceBreakdown(90000, 61000, 0, 3000, 500, 0.08, 7200, 1600,
-                                 16700, 0.18, "standard"),
+            price=breakdown(90000, 61000, net_profit=16700, margin_rate=0.18),
             seo=SeoContent(title="t")))
         self.assertEqual(self.store.expected_cost(p.uid), 61000)
 

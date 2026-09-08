@@ -107,19 +107,27 @@ class PriceBreakdown:
 
     자동화에서 가장 위험한 게 값이 틀린 줄 모르고 대량 등록되는 것이라,
     모든 항목을 저장해 두고 등록 전에 검수할 수 있게 한다.
+
+    sell_price 는 마켓에 노출되는 상품가, total_revenue 는 배송비까지 합친
+    실제 매출이다. 수수료와 마진율은 total_revenue 기준으로 계산된다 —
+    마켓이 배송비 포함 결제금액에 수수료를 매기기 때문.
     """
 
-    sell_price: int                # 최종 판매가 (VAT 포함)
+    sell_price: int                # 마켓 노출 상품가 (VAT 포함)
+    shipping_charge: int           # 고객에게 청구하는 배송비 (무료배송이면 0)
+    total_revenue: int             # sell_price + shipping_charge
     cost_price: int
-    inbound_shipping: int          # 매입 배송비
-    outbound_shipping: int         # 고객 발송 배송비 (판매자 부담분)
+    inbound_shipping: int          # 매입 배송비 (공홈 -> 나)
+    shipping_cost: int             # 실제 택배 단가 (판매자가 택배사에 지불)
     packaging: int
-    commission_rate: float         # 마켓 판매수수료 + 결제수수료 + 광고비 합산
+    commission_rate: float         # 마켓 판매수수료 + 결제 + 매출연동 + 광고 합산
     commission_amount: int
     vat_payable: int
     net_profit: int
-    margin_rate: float             # net_profit / sell_price
+    margin_rate: float             # net_profit / total_revenue
     policy_name: str
+    shipping_mode: str = "free"    # free | paid | conditional
+    free_ship_over: int = 0        # conditional 일 때 무료 기준액
     warnings: list[str] = field(default_factory=list)
 
 
@@ -187,6 +195,11 @@ class Listing:
     detail_html: str
     tags: list[str]
     attributes: dict[str, Any] = field(default_factory=dict)
+    # 배송비 정책 — 마진 계산이 전제한 값과 마켓 등록값이 어긋나면 안 되므로
+    # PriceBreakdown 에서 그대로 실어 나른다.
+    shipping_mode: str = "free"    # free | paid | conditional
+    shipping_charge: int = 0       # 고객 청구 배송비
+    free_ship_over: int = 0        # conditional 일 때 무료 기준액
 
 
 @dataclass

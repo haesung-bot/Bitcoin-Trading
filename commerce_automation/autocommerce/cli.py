@@ -81,10 +81,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("\n[마진 정책]")
     for name, pol in load_policies(settings).items():
         marks = " (기본)" if name == settings.get("pricing.default_policy") else ""
+        ship = pol.shipping_mode
+        if pol.shipping_charge:
+            ship += f" {pol.shipping_charge:,}원"
         print(f"  · {name}{marks}: 목표 {pol.target_margin:.0%} / "
-              f"기준 {pol.margin_basis} / VAT {pol.vat_mode}")
+              f"기준 {pol.margin_basis} / VAT {pol.vat_mode} / 배송 {ship}")
         for market in pol.fees:
-            print(f"      {market} 실효수수료 {pol.fee_rate(market):.2%}")
+            detail = ", ".join(f"{k} {v:.2%}" for k, v in pol.fee_detail(market))
+            print(f"      {market} 실효수수료 {pol.fee_rate(market):.2%} ({detail})")
 
     print("\n[마켓]")
     ok_all = True
@@ -135,18 +139,27 @@ def cmd_price(args: argparse.Namespace) -> int:
     policy = policies.get(name) or MarginPolicy(name=name)
     calc = MarginCalculator(policy)
 
-    markets = args.markets.split(",")
+    markets = [m.strip() for m in args.markets.split(",")]
+    ship = {"free": "무료배송", "paid": "유료배송", "conditional": "조건부무료"}[
+        policy.shipping_mode]
     print(f"\n정책 '{policy.name}' | 목표 {policy.target_margin:.0%} "
-          f"({policy.margin_basis} 기준) | VAT {policy.vat_mode}")
-    print(f"원가 {args.cost:,}원 + 매입배송 {policy.inbound_shipping:,} "
-          f"+ 발송배송 {policy.outbound_shipping:,} + 부자재 {policy.packaging:,}\n")
-    print(f"{'마켓':<8}{'판매가':>12}{'수수료':>12}{'VAT':>10}"
-          f"{'순이익':>12}{'마진율':>9}")
-    print("-" * 66)
+          f"({policy.margin_basis} 기준) | VAT {policy.vat_mode} | {ship}")
+    print(f"원가 {args.cost:,} + 매입배송 {policy.inbound_shipping:,} "
+          f"+ 택배 {policy.shipping_cost:,} + 부자재 {policy.packaging:,} "
+          f"= {args.cost + policy.total_cost_base:,}원")
     for market in markets:
-        bd = calc.compute(args.cost, market.strip())
-        print(f"{market:<10}{bd.sell_price:>12,}{bd.commission_amount:>12,}"
-              f"{bd.vat_payable:>10,}{bd.net_profit:>12,}{bd.margin_rate:>8.1%}")
+        detail = ", ".join(f"{k} {v:.2%}" for k, v in policy.fee_detail(market))
+        print(f"  {market} 수수료 {policy.fee_rate(market):.2%}"
+              f"{'  (' + detail + ')' if detail else ''}")
+
+    print(f"\n{'마켓':<8}{'상품가':>11}{'배송비':>9}{'총매출':>11}"
+          f"{'수수료':>11}{'VAT':>9}{'순이익':>11}{'마진율':>9}")
+    print("-" * 78)
+    for market in markets:
+        bd = calc.compute(args.cost, market)
+        print(f"{market:<10}{bd.sell_price:>11,}{bd.shipping_charge:>9,}"
+              f"{bd.total_revenue:>11,}{bd.commission_amount:>11,}"
+              f"{bd.vat_payable:>9,}{bd.net_profit:>11,}{bd.margin_rate:>8.1%}")
         for w in bd.warnings:
             print(f"           ⚠ {w}")
     print()

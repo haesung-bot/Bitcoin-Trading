@@ -71,6 +71,9 @@ def build_listing(priced: PricedProduct, media: MediaSet, market: str,
         detail_html=raw.description_html or _fallback_detail(priced),
         tags=priced.seo.tags,
         attributes=raw.attributes,
+        shipping_mode=priced.price.shipping_mode,
+        shipping_charge=priced.price.shipping_charge,
+        free_ship_over=priced.price.free_ship_over,
     ), warnings
 
 

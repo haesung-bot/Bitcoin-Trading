@@ -5,10 +5,12 @@ import unittest
 from pathlib import Path
 
 from autocommerce.models import (
-    PriceBreakdown, PricedProduct, PurchaseState, PurchaseTask, RawProduct, SeoContent,
+    PricedProduct, PurchaseState, PurchaseTask, RawProduct, SeoContent,
 )
 from autocommerce.orders.one_click import OneClickConfig, OneClickPurchase, row_to_task
 from autocommerce.storage import Store
+
+from . import breakdown
 
 
 def task(**kw):
@@ -35,8 +37,7 @@ class OneClickCase(unittest.TestCase):
         self.store.save_raw(raw)
         self.store.save_priced(PricedProduct(
             raw=raw,
-            price=PriceBreakdown(99000, 62000, 0, 3000, 500, 0.0774, 7663, 2348,
-                                 23489, 0.24, "standard"),
+            price=breakdown(99000, 62000, net_profit=23489, margin_rate=0.24),
             seo=SeoContent(title="상품")))
 
     def tearDown(self):

@@ -41,18 +41,33 @@ pricing:
       margin_basis: sell_price     # sell_price | cost
       target_margin: 0.18          # 18% 순마진 목표
       vat_mode: general            # general | simplified | none
+                                   # ※ 사업자 등록 후 유형이 확정되면 이 한 줄만 바꾸면 됨.
+                                   #   간이과세자면 simplified 로.
+
+      # --- 원가 ---
       inbound_shipping: 0          # 공홈 -> 나 (무료배송이면 0)
-      outbound_shipping: 3000      # 나 -> 고객 (판매자 부담분)
+      shipping_cost: 3000          # 실제 택배 단가 (판매자가 택배사에 지불)
       packaging: 500
+
+      # --- 배송비를 고객에게 어떻게 청구할 것인가 ---
+      shipping_mode: paid          # free(무료배송) | paid(유료) | conditional(조건부)
+      shipping_charge: 3000        # paid/conditional 일 때 고객 청구액
+      free_ship_over: 0            # conditional 일 때 무료 기준액
+
+      # 수수료: 숫자만 쓰면 VAT 포함으로 본다.
+      # VAT 별도로 고지되는 항목은 {rate, vat_included: false} 로 명시해야
+      # 실제 지급액(x1.1) 기준으로 계산된다.
       fees:
         naver:
-          commission: 0.0374       # 네이버페이 주문관리 수수료
-          sales_link: 0.02         # 매출연동 수수료
-          ad: 0.02                 # 광고비 유보분
+          commission: 0.0374       # 네이버페이 주문관리 수수료(신용카드, VAT 포함)
+          sales_link: 0.02         # 매출연동 수수료 (네이버쇼핑 검색 유입분)
+          # ad: 0.02               # 광고 집행 시 유보분. 현재 미적용.
         coupang:
-          commission: 0.108        # 신발 카테고리 판매수수료
-          payment: 0.0
-          ad: 0.02
+          # 마켓플레이스(판매자배송) 기준. 로켓그로스로 전환하면
+          # 입출고요금/배송비/보관료를 항목으로 추가해야 한다.
+          commission: {rate: 0.108, vat_included: false}   # 신발 10.8% -> 실효 11.88%
+          # ad: 0.02
+
       rounding:
         mode: charm                # charm(끝자리 900) | nearest | none
         unit: 1000
@@ -61,7 +76,7 @@ pricing:
         min_price: 9900
         max_price: 900000
         min_net_profit: 2000       # 이보다 적으면 등록 스킵
-        max_price_multiple: 3.0    # 원가의 3배 넘으면 경고
+        max_price_multiple: 3.0    # 총 매출이 원가의 3배 넘으면 경고
 
 seo:
   max_title_len: 100

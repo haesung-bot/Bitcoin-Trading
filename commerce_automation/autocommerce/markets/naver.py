@@ -41,6 +41,26 @@ except ImportError:  # pragma: no cover
     BCRYPT = False
 
 
+def _delivery_fee_fields(listing: Listing) -> dict[str, Any]:
+    """배송비 정책 -> 네이버 deliveryFee 필드.
+
+    마진 계산이 전제한 배송비와 등록값이 어긋나면 그대로 손실이 되므로,
+    Listing 이 실어 온 정책값을 그대로 옮긴다.
+    """
+    if listing.shipping_mode == "paid":
+        return {
+            "deliveryFeeType": "PAID",
+            "baseFee": listing.shipping_charge,
+        }
+    if listing.shipping_mode == "conditional":
+        return {
+            "deliveryFeeType": "CONDITIONAL_FREE",
+            "baseFee": listing.shipping_charge,
+            "freeConditionalAmount": listing.free_ship_over,
+        }
+    return {"deliveryFeeType": "FREE"}
+
+
 def client_secret_sign(client_id: str, client_secret: str,
                        timestamp_ms: int | None = None) -> tuple[str, int]:
     """(전자서명, 사용한 timestamp) 반환."""
@@ -162,7 +182,7 @@ class NaverAdapter(MarketAdapter):
                 "deliveryAttributeType": "NORMAL",
                 "deliveryCompany": self.cfg.get("delivery_company", "CJGLS"),
                 "deliveryFee": {
-                    "deliveryFeeType": "FREE",
+                    **_delivery_fee_fields(listing),
                     "deliveryFeePayType": "PREPAID",
                     "returnDeliveryFee": int(self.cfg.get("return_fee", 5000)),
                     "exchangeDeliveryFee": int(self.cfg.get("exchange_fee", 10000)),

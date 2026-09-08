@@ -25,10 +25,11 @@ def sample_priced():
                     "원산지": "베트남"},
     )
     price = PriceBreakdown(
-        sell_price=129900, cost_price=89000, inbound_shipping=0,
-        outbound_shipping=3000, packaging=500, commission_rate=0.0774,
-        commission_amount=10054, vat_payable=2486, net_profit=24860,
-        margin_rate=0.19, policy_name="standard",
+        sell_price=129900, shipping_charge=3000, total_revenue=132900,
+        cost_price=89000, inbound_shipping=0, shipping_cost=3000, packaging=500,
+        commission_rate=0.0574, commission_amount=7628, vat_payable=2524,
+        net_profit=25248, margin_rate=0.19, policy_name="standard",
+        shipping_mode="paid",
     )
     seo = SeoContent(title="아디다스 삼바 OG 운동화", tags=["아디다스", "운동화"])
     return PricedProduct(raw=raw, price=price, seo=seo)
@@ -198,3 +199,65 @@ class TestCategoryMapper(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestShippingPolicyInPayload(unittest.TestCase):
+    """마진 계산이 전제한 배송비와 마켓 등록값이 어긋나면 그대로 손실이 된다."""
+
+    def setUp(self):
+        self.mapper = CategoryMapper(
+            {"운동화": {"naver": "50002380", "coupang": "63903"}}, {})
+        self.media = sample_media()
+
+    def _payload(self, adapter, **price_over):
+        priced = sample_priced()
+        for k, v in price_over.items():
+            setattr(priced.price, k, v)
+        images = adapter.publish_images(self.media)
+        listing, _ = build_listing(priced, self.media, adapter.market,
+                                   self.mapper, {}, images=images)
+        return adapter.build_payload(listing)
+
+    # ---------------------------------------------------------- 네이버
+    def test_naver_paid_shipping(self):
+        fee = self._payload(NaverAdapter({}, dry_run=True))[
+            "originProduct"]["deliveryInfo"]["deliveryFee"]
+        self.assertEqual(fee["deliveryFeeType"], "PAID")
+        self.assertEqual(fee["baseFee"], 3000)
+
+    def test_naver_free_shipping(self):
+        fee = self._payload(NaverAdapter({}, dry_run=True),
+                            shipping_mode="free", shipping_charge=0)[
+            "originProduct"]["deliveryInfo"]["deliveryFee"]
+        self.assertEqual(fee["deliveryFeeType"], "FREE")
+        self.assertNotIn("baseFee", fee)
+
+    def test_naver_conditional_shipping(self):
+        fee = self._payload(NaverAdapter({}, dry_run=True),
+                            shipping_mode="conditional", free_ship_over=50000)[
+            "originProduct"]["deliveryInfo"]["deliveryFee"]
+        self.assertEqual(fee["deliveryFeeType"], "CONDITIONAL_FREE")
+        self.assertEqual(fee["freeConditionalAmount"], 50000)
+
+    # ---------------------------------------------------------- 쿠팡
+    def test_coupang_paid_shipping(self):
+        payload = self._payload(CoupangAdapter({"vendor_id": "V"}, dry_run=True))
+        self.assertEqual(payload["deliveryChargeType"], "NOT_FREE")
+        self.assertEqual(payload["deliveryCharge"], 3000)
+
+    def test_coupang_free_shipping(self):
+        payload = self._payload(CoupangAdapter({"vendor_id": "V"}, dry_run=True),
+                                shipping_mode="free", shipping_charge=0)
+        self.assertEqual(payload["deliveryChargeType"], "FREE")
+        self.assertEqual(payload["deliveryCharge"], 0)
+
+    def test_coupang_conditional_shipping(self):
+        payload = self._payload(CoupangAdapter({"vendor_id": "V"}, dry_run=True),
+                                shipping_mode="conditional", free_ship_over=50000)
+        self.assertEqual(payload["deliveryChargeType"], "CONDITIONAL_FREE")
+        self.assertEqual(payload["freeShipOverAmount"], 50000)
+
+    def test_item_price_is_the_displayed_price_not_total(self):
+        """쿠팡 salePrice 에 배송비를 더해 보내면 이중 청구가 된다."""
+        payload = self._payload(CoupangAdapter({"vendor_id": "V"}, dry_run=True))
+        self.assertEqual(payload["items"][0]["salePrice"], 129900)
