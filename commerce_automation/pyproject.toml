@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autocommerce"
+version = "0.1.0"
+description = "상품 수집 → 마진/SEO → AI 이미지 변환 → 오픈마켓 등록 자동화 파이프라인"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.31", "PyYAML>=6.0"]
+
+[project.optional-dependencies]
+imaging = ["Pillow>=10.0"]
+naver = ["bcrypt>=4.0"]
+all = ["Pillow>=10.0", "bcrypt>=4.0"]
+
+[project.scripts]
+autocommerce = "autocommerce.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["autocommerce*"]

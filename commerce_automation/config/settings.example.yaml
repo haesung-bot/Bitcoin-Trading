@@ -1,0 +1,150 @@
+# ---------------------------------------------------------------------------
+# autocommerce 설정 예시
+#   cp config/settings.example.yaml config/settings.yaml
+#   cp .env.example .env   # 실제 키는 여기에만
+# 비밀값은 ${ENV_NAME} 참조만 쓴다. 값 자체를 이 파일에 적지 말 것.
+# ---------------------------------------------------------------------------
+
+runtime:
+  dry_run: true            # true 면 마켓에 실제 등록하지 않고 페이로드만 저장
+  workdir: ./var
+  db_path: ./var/autocommerce.db
+  log_level: INFO
+  concurrency: 4
+
+crawler:
+  user_agent: "autocommerce/0.1 (+mailto:you@example.com)"
+  respect_robots: true     # 끄지 말 것. 끄면 차단/법적 리스크는 운영자 책임.
+  rate_per_sec: 0.5        # 대상 도메인당 초당 요청 수 (0.5 = 2초에 1회)
+  timeout: 20
+  sources:
+    fixture:
+      enabled: true
+      path: ./data/fixtures/abcmart_sample.json
+    abcmart:
+      enabled: false       # 실 운영 시 true. 셀렉터는 아래에서 조정.
+      base_url: "https://www.abcmart.co.kr"
+      list_path: "/display/category?categoryCode={category}"
+      max_pages: 3
+      selectors:           # 사이트 개편 시 코드가 아니라 이 값만 고치면 된다
+        item: "li.item"
+        name: ".prd-name"
+        price: ".price .num"
+        link: "a.prd-link"
+        image: "img.thumb"
+
+pricing:
+  default_policy: standard
+  policies:
+    standard:
+      # 마진 계산식은 pricing/margin.py 의 docstring 참고
+      margin_basis: sell_price     # sell_price | cost
+      target_margin: 0.18          # 18% 순마진 목표
+      vat_mode: general            # general | simplified | none
+      inbound_shipping: 0          # 공홈 -> 나 (무료배송이면 0)
+      outbound_shipping: 3000      # 나 -> 고객 (판매자 부담분)
+      packaging: 500
+      fees:
+        naver:
+          commission: 0.0374       # 네이버페이 주문관리 수수료
+          sales_link: 0.02         # 매출연동 수수료
+          ad: 0.02                 # 광고비 유보분
+        coupang:
+          commission: 0.108        # 신발 카테고리 판매수수료
+          payment: 0.0
+          ad: 0.02
+      rounding:
+        mode: charm                # charm(끝자리 900) | nearest | none
+        unit: 1000
+        ending: 900
+      guards:
+        min_price: 9900
+        max_price: 900000
+        min_net_profit: 2000       # 이보다 적으면 등록 스킵
+        max_price_multiple: 3.0    # 원가의 3배 넘으면 경고
+
+seo:
+  max_title_len: 100
+  max_tags: 10
+  # 마켓 상품명 조립 순서. 빈 값은 자동 생략된다.
+  title_template: "{brand} {model} {category} {attrs}"
+  # 상품명에 넣으면 안 되는 문구 (마켓 정책 위반 -> 노출 제한)
+  banned_terms:
+    - 최저가
+    - 정품
+    - 특가
+    - 무료배송
+    - 이벤트
+    - 세일
+    - １위
+    - 인기
+  # 카테고리별 검색 키워드 사전
+  keyword_sets:
+    운동화: [러닝화, 데일리운동화, 남성운동화, 여성운동화, 커플운동화]
+    슬리퍼: [여름슬리퍼, 실내화, 쪼리, 사무실슬리퍼]
+    부츠: [겨울부츠, 워커, 방한부츠]
+
+imaging:
+  enabled: true
+  provider: local            # local | replicate
+  size: 1000                 # 정사각 캔버스 한 변 (네이버 권장 1000px 이상)
+  background: "#FFFFFF"
+  format: jpeg
+  quality: 88
+  max_images: 5
+  # provider=replicate 일 때만 사용
+  replicate:
+    api_token: "${REPLICATE_API_TOKEN}"
+    model: "black-forest-labs/flux-kontext-pro"
+    prompt: "clean studio product photo on pure white seamless background, centered, soft even lighting, no text, no watermark, no logo overlay"
+    poll_interval: 2
+    timeout: 180
+  # 이미지 저작권 가드: 원본 사용 권한이 확인된 소스만 변환한다.
+  licensing:
+    require_source_license: true
+    licensed_sources: [fixture]   # 권한 확인된 소스만 여기 추가
+
+# 원본 카테고리명 -> 마켓 카테고리 코드 매핑.
+# 여기 없는 카테고리는 markets.<마켓>.default_* 로 떨어지고 경고가 남는다.
+categories:
+  map:
+    운동화:
+      naver: "50002380"
+      coupang: "63903"
+    스니커즈:
+      naver: "50002380"
+      coupang: "63903"
+    슬리퍼:
+      naver: "50002382"
+      coupang: "63905"
+    부츠:
+      naver: "50002381"
+      coupang: "63904"
+
+markets:
+  naver:
+    enabled: false
+    base_url: "https://api.commerce.naver.com"
+    client_id: "${NAVER_CLIENT_ID}"
+    client_secret: "${NAVER_CLIENT_SECRET}"
+    default_category_id: "50002380"    # 예시: 스니커즈
+    origin: "수입산"
+    after_service_tel: "${AS_TEL}"
+    return_address_id: "${NAVER_RETURN_ADDR_ID}"
+  coupang:
+    enabled: false
+    base_url: "https://api-gateway.coupang.com"
+    access_key: "${COUPANG_ACCESS_KEY}"
+    secret_key: "${COUPANG_SECRET_KEY}"
+    vendor_id: "${COUPANG_VENDOR_ID}"
+    vendor_user_id: "${COUPANG_VENDOR_USER_ID}"
+    outbound_place_code: "${COUPANG_OUTBOUND_CODE}"
+    return_center_code: "${COUPANG_RETURN_CENTER}"
+    default_category_code: "63903"
+
+orders:
+  poll_interval_min: 10
+  # 1-Click 확인 구매: 결제는 절대 자동화하지 않는다.
+  one_click:
+    auto_approve: false
+    cost_drift_block: 3000     # 매입가가 이만큼 오르면 자동 승인 차단, 사람 확인

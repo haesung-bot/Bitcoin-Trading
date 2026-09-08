@@ -1,0 +1,65 @@
+[
+  {
+    "source_product_id": "IE3438",
+    "source_url": "https://example-shop.test/product?prdtNo=IE3438",
+    "name": "[단독] 아디다스 삼바 OG 클라우드화이트 코어블랙 IE3438 운동화",
+    "brand": "아디다스",
+    "cost_price": 89000,
+    "list_price": 139000,
+    "category_path": ["신발", "스니커즈", "운동화"],
+    "image_urls": [
+      "./data/fixtures/images/samba_main.png",
+      "./data/fixtures/images/samba_sub.png"
+    ],
+    "options": [
+      {"name": "사이즈", "value": "250", "stock": 3},
+      {"name": "사이즈", "value": "260", "stock": 7},
+      {"name": "사이즈", "value": "270", "stock": 5},
+      {"name": "사이즈", "value": "280", "stock": 0}
+    ],
+    "description_html": "<div><p>아디다스 삼바 OG 클래식 실루엣</p></div>",
+    "attributes": {
+      "색상": "화이트",
+      "소재": "천연가죽",
+      "성별": "남녀공용",
+      "원산지": "베트남",
+      "제조사": "아디다스코리아"
+    }
+  },
+  {
+    "source_product_id": "MR530SG",
+    "source_url": "https://example-shop.test/product?prdtNo=MR530SG",
+    "name": "뉴발란스 530 스틸그레이 MR530SG 데일리 러닝화 275",
+    "brand": "뉴발란스",
+    "cost_price": 62000,
+    "list_price": 109000,
+    "category_path": ["신발", "스니커즈", "운동화"],
+    "image_urls": [
+      "./data/fixtures/images/nb530_main.png",
+      "./data/fixtures/images/nb530_sub.png"
+    ],
+    "options": [
+      {"name": "사이즈", "value": "245", "stock": 2},
+      {"name": "사이즈", "value": "255", "stock": 4},
+      {"name": "사이즈", "value": "275", "stock": 6}
+    ],
+    "description_html": "<div><p>뉴발란스 530 레트로 러닝</p></div>",
+    "attributes": {
+      "색상": "그레이",
+      "소재": "메쉬",
+      "성별": "남녀공용",
+      "원산지": "인도네시아",
+      "제조사": "뉴발란스코리아"
+    }
+  },
+  {
+    "source_product_id": "BROKEN01",
+    "source_url": "https://example-shop.test/product?prdtNo=BROKEN01",
+    "name": "가격 파싱 실패 케이스 (검증에서 걸러져야 함)",
+    "brand": "테스트",
+    "cost_price": 0,
+    "category_path": ["신발"],
+    "image_urls": [],
+    "options": []
+  }
+]
