@@ -32,8 +32,15 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8612743997:AAEkg107o_0nHAvPsGThZLZppvig
 LICENSE_SERVER_URL = "https://bitcoin-trading-1111.onrender.com"
 ADMIN_SECRET = "a7b3c9d1e5f8g2h4i6j0k3l7m9qw"  # 서버 환경변수에 등록한 관리자 비번
 
-# ⚠️ 여기에 프로그램 압축파일을 올린 구글 드라이브 또는 드롭박스 등의 다운로드 링크를 넣으세요!
-PROGRAM_DOWNLOAD_URL = "https://github.com/haesung-bot/Bitcoin-Trading/releases/download/v1.0.0/pro.zip"
+# 프로그램 다운로드 링크.
+# GitHub Releases의 'latest' 주소라서, 새 버전을 릴리스로 올리기만 하면 이 코드를 고치지
+# 않아도 항상 최신 파일이 내려간다. (예전처럼 v1.0.0으로 고정해 두면 새 버전을 올려도
+# 유저는 계속 옛날 파일을 받게 된다)
+# 릴리스에 올릴 파일 이름은 아래 주소 끝부분과 반드시 같아야 한다: HedgedMartingaleBot.zip
+PROGRAM_DOWNLOAD_URL = os.environ.get(
+    "PROGRAM_DOWNLOAD_URL",
+    "https://github.com/haesung-bot/Bitcoin-Trading/releases/latest/download/HedgedMartingaleBot.zip",
+)
 
 # ⚠️ 답을 못 찾을 때 안내할 운영자 개인 텔레그램 링크.
 # 텔레그램 앱 → 설정 → 프로필 편집에서 @username을 만들거나 확인할 수 있습니다.
